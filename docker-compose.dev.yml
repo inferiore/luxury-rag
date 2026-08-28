@@ -1,0 +1,29 @@
+# Dev override for rag/docker-compose.yml — adds hot reload to the `app`
+# service. Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d
+#
+# Targets the `builder` stage of the Dockerfile (has devDependencies + the
+# Nest CLI, needed for `start:dev` watch mode) instead of the slim
+# production `runner` stage, and bind-mounts ./src so file changes on the
+# host are picked up by the container's watcher without an image rebuild.
+#
+# Uses a distinct image tag (rag-app:dev) so building this override never
+# overwrites the production `rag-app:latest` image built from the base
+# docker-compose.yml (they'd otherwise share the same default image name
+# for the same service, silently clobbering each other's cache — the
+# builder-stage image has no CMD, so if it overwrote rag-app:latest the
+# plain `docker compose -f docker-compose.yml up` would start bare `node`
+# with no arguments and exit immediately).
+services:
+  app:
+    image: rag-app:dev
+    build:
+      target: builder
+    container_name: rag-app-dev
+    environment:
+      NODE_ENV: development
+    volumes:
+      - ./src:/app/src
+    # Runs pending migrations (via ts-node, available in the `builder`
+    # stage) before starting Nest in watch mode.
+    command: sh -c "npm run migration:run && npm run start:dev"

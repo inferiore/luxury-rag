@@ -1,0 +1,74 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: rag-postgres
+    restart: unless-stopped
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-rag_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
+      POSTGRES_DB: ${POSTGRES_DB:-rag_db}
+    volumes:
+      - rag_pgdata:/var/lib/postgresql/data
+      - ./db/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-rag_user} -d ${POSTGRES_DB:-rag_db}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: rag-app
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      NODE_ENV: ${NODE_ENV:-production}
+      PORT: ${PORT:-3000}
+      # POSTGRES_HOST/PORT are fixed on purpose: inside this compose network
+      # the app always reaches Postgres via the "postgres" service name on
+      # its container port 5432, regardless of what POSTGRES_HOST/PORT are
+      # set to in .env for other run modes (e.g. `npm run start:dev` on the
+      # host, which needs POSTGRES_HOST=localhost instead).
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: ${POSTGRES_USER:-rag_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
+      POSTGRES_DB: ${POSTGRES_DB:-rag_db}
+      # Ollama runs on Eder's host machine, not in a container. From inside
+      # this container, http://localhost:11434 would point at the container
+      # itself, not the host — that's the classic confusing "Ollama no
+      # responde" failure. host.docker.internal is Docker Desktop's DNS name
+      # for the host and is hardcoded here (not read from .env) so it can
+      # never be silently overridden by a host-oriented OLLAMA_BASE_URL
+      # value. Only valid on Docker Desktop (Mac/Windows) — see .env.example.
+      OLLAMA_BASE_URL: http://host.docker.internal:11434
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-qwen3-embedding}
+      CHAT_MODEL: ${CHAT_MODEL:-qwen3:8b}
+      VECTOR_DIM: ${VECTOR_DIM:-1536}
+      DEFAULT_TOP_K: ${DEFAULT_TOP_K:-1}
+      SIMILARITY_THRESHOLD: ${SIMILARITY_THRESHOLD:-0.4}
+      LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-}
+      LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-}
+      LANGFUSE_HOST: ${LANGFUSE_HOST:-https://cloud.langfuse.com}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173}
+    extra_hosts:
+      # host-gateway makes host.docker.internal resolve on Linux Docker
+      # Engine too; no-op / already default on Docker Desktop for Mac.
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "${PORT:-3000}:3000"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3000/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+volumes:
+  rag_pgdata:

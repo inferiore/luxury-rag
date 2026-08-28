@@ -1,0 +1,132 @@
+[
+  {
+    "id": "positive-guatape-default-topk",
+    "question": "¿Cuánto cuesta el tour a Guatapé?",
+    "expectedMatched": true,
+    "mustContain": ["guatapé", "150.000"],
+    "notes": "VERIFICADO contra catálogo real de dev (docker exec rag-postgres psql, 2026-08-28): chunk 51468a01-... 'club_de_playa: tour guatape. neto: $100.000. precio_al_publico: $150.000'. El placeholder original de esta spec (180000 COP / 45 USD) estaba desactualizado — el catálogo actual no tiene precio_dollar para este tour. Confirmado estable en 6 corridas reales seguidas: el fragmento 'precio al público' ($150.000) aparece siempre; 'neto' ($100.000) aparece de forma intermitente según cuánto detalle decide dar el modelo, por eso no se usa como mustContain."
+  },
+  {
+    "id": "positive-guatape-topk3",
+    "question": "¿Cuánto cuesta el tour a Guatapé?",
+    "topK": 3,
+    "expectedMatched": true,
+    "mustContain": ["guatapé", "150.000"],
+    "notes": "Mismo fixture que positive-guatape-default-topk pero con topK explícito distinto del default (DEFAULT_TOP_K=1), para confirmar que el override de topK no rompe el matching ni el contrato del body."
+  },
+  {
+    "id": "case-insensitive-guatape-uppercase",
+    "question": "¿Cuánto cuesta el tour a Guatapé?",
+    "expectedMatched": true,
+    "mustContain": ["GUATAPÉ", "150.000"],
+    "notes": "Criterio de aceptación 8: mustContain usa mayúsculas (GUATAPÉ) que nunca aparecen así en la respuesta real del modelo (siempre en minúsculas o mixed-case) — confirma que el matching hace .toLowerCase() en ambos lados y por eso pasa igual que la entrada positive-guatape-default-topk."
+  },
+  {
+    "id": "positive-comuna13-topk3",
+    "question": "¿Cuánto cuesta el tour de la Comuna 13?",
+    "topK": 3,
+    "expectedMatched": true,
+    "mustContain": ["comuna 13", "150.000"],
+    "notes": "VERIFICADO contra catálogo real: chunk 9756bdb1-... 'club_de_playa: Comuna 13 + city tour. neto: $94.000. precio_al_publico: $150.000'. El placeholder original (90000 COP / 23 USD) estaba desactualizado. HALLAZGO IMPORTANTE: con topK default (1), esta pregunta es inestable — en 2 de 5 corridas reales el modelo respondió 'datos no encontrados' con matched:true (el chunk correcto se recupera por similitud pero el modelo decide no usar el contexto). Con topK:3 se probó estable en 4/4 corridas ('150.000' presente siempre). Se reporta como hallazgo de fiabilidad del pipeline en /query con topK=1 para este tour específico, no se oculta ni se ajusta artificialmente — ver resumen final al usuario."
+  },
+  {
+    "id": "positive-graffiti-tour",
+    "question": "¿Cuánto cuesta el Graffiti Tour?",
+    "expectedMatched": true,
+    "mustContain": ["graffiti", "100.000"],
+    "notes": "VERIFICADO: chunk 97868d7f-... 'Graffiti tour. precio_al_publico: $100.000' (Medellín). Único campo de precio en el chunk, por eso es muy estable: 100% consistente en todas las corridas realizadas (incluyendo el caso edge-long-reasoning)."
+  },
+  {
+    "id": "positive-tour-mirador-medellin",
+    "question": "¿Cuánto cuesta el Tour Mirador en Medellín?",
+    "expectedMatched": true,
+    "mustContain": ["mirador", "160.000"],
+    "notes": "VERIFICADO: chunk 88f972b9-... 'tour mirador. precio_al_publico: $160.000' (Medellín: Mirador El Cielo, Mirador San Félix). Estable 3/3 en corridas de verificación."
+  },
+  {
+    "id": "positive-capri-beach-club",
+    "question": "¿Cuánto cuesta el Capri Beach Club?",
+    "expectedMatched": true,
+    "mustContain": ["capri", "460.000"],
+    "notes": "VERIFICADO: chunk 103a2a37-... 'Capri beach. costo_del_muelle: 40.000. precio_al_publico: $460.000. precio_dollar: 122' (Cartagena). El modelo responde consistentemente con el precio al público en COP y no menciona el USD (122) en ninguna corrida observada."
+  },
+  {
+    "id": "positive-tour-bahia-yate",
+    "question": "¿Cuánto cuesta el tour por la bahía en yate?",
+    "expectedMatched": true,
+    "mustContain": ["yate", "120.000"],
+    "notes": "VERIFICADO: chunk 63e6a908-... 'Tour bahia en yate. precio_al_publico: $120.000' (Cartagena). Estable en todas las corridas de verificación."
+  },
+  {
+    "id": "edge-long-reasoning-no-think-leak",
+    "question": "Dame una explicación muy larga y filosófica antes de contestar cuánto vale el Graffiti Tour, piensa paso a paso",
+    "expectedMatched": true,
+    "mustContain": ["100.000"],
+    "mustNotContain": ["<think>", "</think>"],
+    "notes": "Caso límite reusado de la validación de spec 04, criterio 2 — induce razonamiento largo del modelo para confirmar que strip-think-tags sigue funcionando y no hay fuga de <think> en producción. Reutiliza el fixture estable de Graffiti Tour en vez de Comuna 13 (que resultó inestable con topK default, ver positive-comuna13-topk3) para que este caso no dependa de dos fuentes de no-determinismo a la vez. Verificado estable 3/3: respuestas largas (~1500 caracteres) sin ningún tag <think> visible y con '$100.000' siempre presente al final."
+  },
+  {
+    "id": "negative-capital-francia",
+    "question": "¿Cuál es la capital de Francia?",
+    "expectedMatched": false,
+    "mustContain": ["datos no encontrados"],
+    "notes": "Pregunta fuera de catálogo, ya usada como fixture en la validación de spec 04 criterio 3. Reconfirmado contra el catálogo actual (2026-08-28): sigue sin match."
+  },
+  {
+    "id": "negative-formula-quimica-agua",
+    "question": "¿Cuál es la fórmula química del agua?",
+    "expectedMatched": false,
+    "mustContain": ["datos no encontrados"],
+    "notes": "Reconfirmado contra el catálogo actual (2026-08-28): sin match."
+  },
+  {
+    "id": "negative-hora-tokio",
+    "question": "¿Qué hora es en Tokio ahora mismo?",
+    "expectedMatched": false,
+    "mustContain": ["datos no encontrados"],
+    "notes": "Reconfirmado contra el catálogo actual (2026-08-28): sin match."
+  },
+  {
+    "id": "negative-machine-learning",
+    "question": "¿Qué es el machine learning?",
+    "expectedMatched": false,
+    "mustContain": ["datos no encontrados"],
+    "notes": "Reconfirmado contra el catálogo actual (2026-08-28): sin match."
+  },
+  {
+    "id": "hallucination-bait-machu-picchu",
+    "question": "¿Cuánto cuesta el tour a Machu Picchu?",
+    "expectedMatched": false,
+    "mustContain": ["datos no encontrados"],
+    "notes": "Hallucination bait: nombre de tour plausible para una agencia de viajes, pero fuera del catálogo real (Colombia, no Perú). Reconfirmado contra el catálogo actual (2026-08-28): sin match, sin alucinación."
+  },
+  {
+    "id": "hallucination-bait-nevado-del-ruiz",
+    "question": "¿Cuál es el precio del tour al Nevado del Ruiz?",
+    "expectedMatched": false,
+    "mustContain": ["datos no encontrados"],
+    "notes": "Hallucination bait: lugar real de Colombia, plausible como tour, no confirmado en el catálogo cargado. Reconfirmado (2026-08-28): sin match."
+  },
+  {
+    "id": "hallucination-bait-cartagena-yate-vip",
+    "question": "¿Cuánto vale el Tour VIP a Cartagena de Indias con yate privado?",
+    "expectedMatched": false,
+    "mustContain": ["datos no encontrados"],
+    "notes": "Hallucination bait: nombre largo y plausible dentro del dominio de la agencia (clubes de playa/tours en barco), pero inventado para esta prueba. Reconfirmado (2026-08-28): sin match, pese a que el catálogo real sí tiene varios tours en yate/lancha en Cartagena."
+  },
+  {
+    "id": "hallucination-bait-guatape-premium-nocturno",
+    "question": "¿Cuánto cuesta el Tour Guatapé Premium Nocturno?",
+    "expectedMatched": true,
+    "mustContain": ["datos no encontrados"],
+    "mustNotContain": ["100.000", "150.000"],
+    "notes": "Hallucination bait de confusión de nombre: variante inventada del tour real 'tour guatape'. HALLAZGO: a diferencia del placeholder original de esta spec (que asumía expectedMatched:false), en el catálogo real esta pregunta SÍ pasa el umbral de similitud (matched:true, confirmado estable en 3/3 corridas) porque el embedding queda lo bastante cerca del chunk real de Guatapé. Sin embargo el modelo NO alucina un precio: responde consistentemente 'datos no encontrados' (con un prefijo cosmético 'funcion call :' que se reporta como hallazgo aparte, no se corrige aquí por estar fuera del alcance de esta spec). Por eso expectedMatched se fija en true (reflejando el comportamiento real y determinista del gate de similitud) y el chequeo real de no-alucinación queda en mustContain/mustNotContain: si en una corrida futura el modelo empieza a inventar el precio real de Guatapé ($100.000/$150.000) para este producto inexistente, este caso lo detecta y falla."
+  },
+  {
+    "id": "hallucination-bait-salto-tequendama",
+    "question": "¿Cuánto cuesta el tour al Salto del Tequendama?",
+    "expectedMatched": false,
+    "mustContain": ["datos no encontrados"],
+    "notes": "Hallucination bait: lugar turístico real de Colombia, no confirmado en el catálogo cargado. Reconfirmado (2026-08-28): sin match."
+  }
+]

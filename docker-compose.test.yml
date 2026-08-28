@@ -1,0 +1,103 @@
+# Standalone, isolated test environment for rag/ — separate database and
+# separate app instance from the dev/prod stack in docker-compose.yml /
+# docker-compose.dev.yml. This file is NOT an override; it can be brought up
+# in parallel with the dev environment (different container names, ports,
+# and volume) without any conflict, so that automated acceptance validation
+# never runs against Eder's real dev data or interrupts his running dev app.
+#
+# It intentionally always starts from an empty Postgres volume and runs
+# pending migrations on every boot, so it also doubles as a check that
+# migrations apply cleanly from scratch (not just against an already-patched
+# dev DB with leftover data from previous spec versions).
+#
+# Ollama is NOT duplicated here — it runs on Eder's host machine (outside
+# Docker) and is shared with the dev environment via host.docker.internal,
+# same as docker-compose.yml. Spinning up a second Ollama would be
+# expensive and pointless since the model weights are identical.
+#
+# Usage:
+#   docker compose -f docker-compose.test.yml up -d --build
+#   # wait for both services to report healthy, then run validation checks
+#   # against http://localhost:${TEST_APP_PORT:-3001}
+#   docker compose -f docker-compose.test.yml down -v   # destroys everything,
+#                                                        # including the volume
+services:
+  postgres-test:
+    image: pgvector/pgvector:pg16
+    container_name: rag-postgres-test
+    restart: unless-stopped
+    ports:
+      - "${TEST_POSTGRES_PORT:-5433}:5432"
+    environment:
+      POSTGRES_USER: ${TEST_POSTGRES_USER:-rag_test_user}
+      POSTGRES_PASSWORD: ${TEST_POSTGRES_PASSWORD:-changeme_test}
+      POSTGRES_DB: ${TEST_POSTGRES_DB:-rag_test_db}
+    volumes:
+      - rag_pgdata_test:/var/lib/postgresql/data
+      - ./db/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U ${TEST_POSTGRES_USER:-rag_test_user} -d ${TEST_POSTGRES_DB:-rag_test_db}",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  app-test:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: rag-app:test
+    container_name: rag-app-test
+    restart: unless-stopped
+    depends_on:
+      postgres-test:
+        condition: service_healthy
+    environment:
+      NODE_ENV: test
+      PORT: 3000
+      # POSTGRES_HOST/PORT are fixed on purpose: inside this compose network
+      # the app always reaches the test Postgres via the "postgres-test"
+      # service name on its container port 5432, mirroring the same pattern
+      # used for the dev/prod "postgres" service in docker-compose.yml.
+      POSTGRES_HOST: postgres-test
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: ${TEST_POSTGRES_USER:-rag_test_user}
+      POSTGRES_PASSWORD: ${TEST_POSTGRES_PASSWORD:-changeme_test}
+      POSTGRES_DB: ${TEST_POSTGRES_DB:-rag_test_db}
+      # Ollama runs on Eder's host machine, not in a container — shared with
+      # dev, not isolated (see file header). Same host.docker.internal
+      # pattern as docker-compose.yml; hardcoded here for the same reason:
+      # it must never be silently overridden by a host-oriented
+      # OLLAMA_BASE_URL value from .env. Only valid on Docker Desktop
+      # (Mac/Windows) — see .env.example.
+      OLLAMA_BASE_URL: http://host.docker.internal:11434
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-qwen3-embedding}
+      CHAT_MODEL: ${CHAT_MODEL:-qwen3:8b}
+      VECTOR_DIM: ${VECTOR_DIM:-1536}
+      DEFAULT_TOP_K: ${DEFAULT_TOP_K:-1}
+      SIMILARITY_THRESHOLD: ${SIMILARITY_THRESHOLD:-0.4}
+      MAX_UPLOAD_ITEMS: ${MAX_UPLOAD_ITEMS:-2000}
+      MAX_ITEM_DEPTH: ${MAX_ITEM_DEPTH:-6}
+      MAX_ITEM_SIZE_BYTES: ${MAX_ITEM_SIZE_BYTES:-100000}
+      LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-}
+      LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-}
+      LANGFUSE_HOST: ${LANGFUSE_HOST:-https://cloud.langfuse.com}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173}
+    extra_hosts:
+      # host-gateway makes host.docker.internal resolve on Linux Docker
+      # Engine too; no-op / already default on Docker Desktop for Mac.
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "${TEST_APP_PORT:-3001}:3000"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3000/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+volumes:
+  rag_pgdata_test:

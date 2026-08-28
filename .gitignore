@@ -1,0 +1,21 @@
+# compiled output
+/dist
+/node_modules
+
+# logs
+*.log
+
+# env
+.env
+
+# coverage
+/coverage
+
+# eval reports (artefactos de corrida local, no código fuente)
+/eval/reports/
+
+# OS
+.DS_Store
+
+# IDE
+.vscode/
