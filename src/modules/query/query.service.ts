@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Inject, Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type {
   LangfuseGenerationClient,
@@ -7,7 +7,8 @@ import type {
   TextPromptClient,
 } from 'langfuse';
 import { ChunksRepository, NearestChunk } from '../chunks/chunks.repository';
-import { OllamaProvider } from '../ollama/ollama.provider';
+import { LLM_PROVIDER_TOKEN } from '../llm/llm-provider';
+import type { LlmProvider } from '../llm/llm-provider';
 import { LangfuseService } from '../langfuse/langfuse.service';
 import { stripThinkTags } from '../../common/utils/strip-think-tags';
 import { QueryResponseDto } from './dto/query-response.dto';
@@ -35,7 +36,7 @@ export class QueryService {
   constructor(
     private readonly configService: ConfigService,
     private readonly chunksRepository: ChunksRepository,
-    private readonly ollamaProvider: OllamaProvider,
+    @Inject(LLM_PROVIDER_TOKEN) private readonly llmProvider: LlmProvider,
     private readonly langfuseService: LangfuseService,
   ) {}
 
@@ -54,7 +55,7 @@ export class QueryService {
     const embedSpan = this.startSpan(trace, 'embed-question', { question });
     let queryEmbedding: number[];
     try {
-      queryEmbedding = await this.ollamaProvider.embed(question);
+      queryEmbedding = await this.llmProvider.embed(question);
     } catch (error) {
       this.endSpan(embedSpan, undefined, error);
       throw error;
@@ -103,7 +104,7 @@ export class QueryService {
       },
     ];
 
-    const chatModel = this.configService.get<string>('ollama.chatModel');
+    const chatModel = this.configService.get<string>('llm.chatModel');
     const chatGeneration = this.startGeneration(trace, 'chat', {
       input: { messages },
       model: chatModel,
@@ -112,7 +113,7 @@ export class QueryService {
 
     let rawAnswer: string;
     try {
-      rawAnswer = await this.ollamaProvider.chat(messages);
+      rawAnswer = await this.llmProvider.chat(messages);
     } catch (error) {
       this.endGeneration(chatGeneration, undefined, error);
       throw error;

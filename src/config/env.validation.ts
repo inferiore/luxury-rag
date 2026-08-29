@@ -17,12 +17,30 @@ export const envValidationSchema = Joi.object({
   POSTGRES_USER: Joi.string().required(),
   POSTGRES_PASSWORD: Joi.string().required(),
   POSTGRES_DB: Joi.string().required(),
+  POSTGRES_SSL: Joi.boolean().default(false),
 
-  // --- Ollama ---
-  OLLAMA_BASE_URL: Joi.string().default('http://localhost:11434'),
-  EMBEDDING_MODEL: Joi.string().default('qwen3-embedding'),
-  CHAT_MODEL: Joi.string().default('qwen3:8b'),
   VECTOR_DIM: Joi.number().default(1536),
+
+  // --- Selección de proveedor LLM ---
+  LLM_PROVIDER: Joi.string().valid('ollama', 'openai').default('ollama'),
+
+  // --- Config compartida del proveedor LLM activo (Ollama u OpenAI-compatible) ---
+  // BASE_URL/CHAT_MODEL/EMBEDDING_MODEL sirven para cualquiera de los dos
+  // providers según LLM_PROVIDER — un .env solo corre un provider a la vez,
+  // así que no hace falta duplicar el nombre por proveedor. LLM_API_KEY no
+  // aplica a Ollama (no usa auth), solo se exige cuando LLM_PROVIDER=openai.
+  BASE_URL: Joi.string()
+    .default('http://localhost:11434')
+    .when('LLM_PROVIDER', { is: 'openai', then: Joi.string().required() }),
+  CHAT_MODEL: Joi.string()
+    .default('qwen3:8b')
+    .when('LLM_PROVIDER', { is: 'openai', then: Joi.string().required() }),
+  EMBEDDING_MODEL: Joi.string()
+    .default('qwen3-embedding')
+    .when('LLM_PROVIDER', { is: 'openai', then: Joi.string().required() }),
+  LLM_API_KEY: Joi.string()
+    .allow('')
+    .when('LLM_PROVIDER', { is: 'openai', then: Joi.string().required() }),
 
   // --- Validación de /documents/upload (spec 02 v2) ---
   MAX_UPLOAD_ITEMS: Joi.number().default(2000),

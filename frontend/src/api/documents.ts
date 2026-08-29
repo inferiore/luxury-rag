@@ -1,4 +1,4 @@
-import { API_BASE_URL } from './config';
+import { API_BASE_URL, authHeaders } from './config';
 import {
   ApiError,
   type DocumentListItemDto,
@@ -21,6 +21,7 @@ export async function uploadTours(file: File): Promise<UploadSuccessResponse> {
   try {
     response = await fetch(`${API_BASE_URL}/documents/upload`, {
       method: 'POST',
+      headers: { ...authHeaders() },
       body: formData,
     });
   } catch {
@@ -55,7 +56,9 @@ export async function getDocuments(
 ): Promise<PaginatedResponse<DocumentListItemDto>> {
   let response: Response;
   try {
-    response = await fetch(`${API_BASE_URL}/documents?page=${page}&limit=${limit}`);
+    response = await fetch(`${API_BASE_URL}/documents?page=${page}&limit=${limit}`, {
+      headers: { ...authHeaders() },
+    });
   } catch {
     throw new ApiError(
       'No se pudo conectar con el servidor. Verifica que el backend esté corriendo.',
@@ -85,7 +88,9 @@ export async function getDocuments(
 export async function getDocument(id: string): Promise<DocumentListItemDto> {
   let response: Response;
   try {
-    response = await fetch(`${API_BASE_URL}/documents/${id}`);
+    response = await fetch(`${API_BASE_URL}/documents/${id}`, {
+      headers: { ...authHeaders() },
+    });
   } catch {
     throw new ApiError(
       'No se pudo conectar con el servidor. Verifica que el backend esté corriendo.',
@@ -120,6 +125,7 @@ export async function retryFailedChunks(documentId: string): Promise<RetryFailed
   try {
     response = await fetch(`${API_BASE_URL}/documents/${documentId}/retry-failed-chunks`, {
       method: 'POST',
+      headers: { ...authHeaders() },
     });
   } catch {
     throw new ApiError(

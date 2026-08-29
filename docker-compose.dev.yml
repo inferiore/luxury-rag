@@ -14,16 +14,62 @@
 # builder-stage image has no CMD, so if it overwrote rag-app:latest the
 # plain `docker compose -f docker-compose.yml up` would start bare `node`
 # with no arguments and exit immediately).
+#
+# Since production (docker-compose.yml) moved to a managed Supabase Postgres
+# project and no longer runs any local Postgres container, this override now
+# also owns the local `postgres` service used for dev — dev keeps working
+# exactly as before (self-hosted Postgres via Docker), just defined here
+# instead of in the base file.
 services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: rag-postgres
+    restart: unless-stopped
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-rag_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
+      POSTGRES_DB: ${POSTGRES_DB:-rag_db}
+    volumes:
+      - rag_pgdata:/var/lib/postgresql/data
+      - ./db/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-rag_user} -d ${POSTGRES_DB:-rag_db}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
   app:
     image: rag-app:dev
     build:
       target: builder
     container_name: rag-app-dev
+    depends_on:
+      postgres:
+        condition: service_healthy
     environment:
       NODE_ENV: development
+      # POSTGRES_HOST/PORT/SSL are fixed on purpose: inside this compose
+      # network the app always reaches Postgres via the "postgres" service
+      # name on its container port 5432, unencrypted (local Docker network,
+      # not the internet) — regardless of what POSTGRES_HOST/PORT/SSL are
+      # set to in .env for other run modes (e.g. `npm run start:dev` on the
+      # host, or production against Supabase).
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_SSL: "false"
+      # Producción (docker-compose.yml) ya no hardcodea BASE_URL — ahora se
+      # lee de .env porque también sirve para un proveedor cloud. Dev sigue
+      # corriendo Ollama en el host (fuera de Docker), así que este override
+      # debe fijarlo explícitamente aquí, sin importar qué tenga .env para
+      # otros modos de ejecución (ej. producción contra OpenRouter/Gemini).
+      BASE_URL: http://host.docker.internal:11434
     volumes:
       - ./src:/app/src
     # Runs pending migrations (via ts-node, available in the `builder`
     # stage) before starting Nest in watch mode.
     command: sh -c "npm run migration:run && npm run start:dev"
+
+volumes:
+  rag_pgdata:

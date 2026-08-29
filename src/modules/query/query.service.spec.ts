@@ -13,19 +13,15 @@ jest.mock('langfuse', () => ({
   })),
 }));
 
-import {
-  QueryService,
-  NO_MATCH_ANSWER,
-  SYSTEM_PROMPT,
-} from './query.service';
+import { QueryService, NO_MATCH_ANSWER, SYSTEM_PROMPT } from './query.service';
 import { ChunksRepository } from '../chunks/chunks.repository';
-import { OllamaProvider } from '../ollama/ollama.provider';
+import { LLM_PROVIDER_TOKEN, LlmProvider } from '../llm/llm-provider';
 import { LangfuseService } from '../langfuse/langfuse.service';
 
 describe('QueryService', () => {
   let service: QueryService;
   let chunksRepository: jest.Mocked<Pick<ChunksRepository, 'findNearest'>>;
-  let ollamaProvider: jest.Mocked<Pick<OllamaProvider, 'embed' | 'chat'>>;
+  let llmProvider: jest.Mocked<Pick<LlmProvider, 'embed' | 'chat'>>;
   let langfuseService: {
     client: null | { trace: jest.Mock };
     getSystemPrompt: jest.Mock;
@@ -34,12 +30,12 @@ describe('QueryService', () => {
   const configValues: Record<string, unknown> = {
     'query.defaultTopK': 1,
     'query.similarityThreshold': 0.4,
-    'ollama.chatModel': 'qwen3:8b',
+    'llm.chatModel': 'qwen3:8b',
   };
 
   beforeEach(async () => {
     chunksRepository = { findNearest: jest.fn() };
-    ollamaProvider = { embed: jest.fn(), chat: jest.fn() };
+    llmProvider = { embed: jest.fn(), chat: jest.fn() };
     langfuseService = {
       client: null,
       getSystemPrompt: jest
@@ -55,7 +51,7 @@ describe('QueryService', () => {
           useValue: { get: jest.fn((key: string) => configValues[key]) },
         },
         { provide: ChunksRepository, useValue: chunksRepository },
-        { provide: OllamaProvider, useValue: ollamaProvider },
+        { provide: LLM_PROVIDER_TOKEN, useValue: llmProvider },
         { provide: LangfuseService, useValue: langfuseService },
       ],
     }).compile();
@@ -64,11 +60,11 @@ describe('QueryService', () => {
   });
 
   it('devuelve matched:true y la respuesta stripeada cuando hay coincidencia bajo el umbral', async () => {
-    ollamaProvider.embed.mockResolvedValue([0.1, 0.2, 0.3]);
+    llmProvider.embed.mockResolvedValue([0.1, 0.2, 0.3]);
     chunksRepository.findNearest.mockResolvedValue([
       { id: 'chunk-1', content: 'Tour Guatapé: 180000 COP', distance: 0.1 },
     ]);
-    ollamaProvider.chat.mockResolvedValue(
+    llmProvider.chat.mockResolvedValue(
       '<think>razono...</think>El tour a Guatapé cuesta $180.000 COP.',
     );
 
@@ -86,17 +82,17 @@ describe('QueryService', () => {
   });
 
   it('devuelve "datos no encontrados" sin llamar al chat model si no hay candidatos', async () => {
-    ollamaProvider.embed.mockResolvedValue([0.1, 0.2, 0.3]);
+    llmProvider.embed.mockResolvedValue([0.1, 0.2, 0.3]);
     chunksRepository.findNearest.mockResolvedValue([]);
 
     const result = await service.ask('¿Cuál es la capital de Francia?', 1);
 
     expect(result).toEqual({ answer: NO_MATCH_ANSWER, matched: false });
-    expect(ollamaProvider.chat).not.toHaveBeenCalled();
+    expect(llmProvider.chat).not.toHaveBeenCalled();
   });
 
   it('devuelve "datos no encontrados" sin llamar al chat model si la distancia supera el umbral', async () => {
-    ollamaProvider.embed.mockResolvedValue([0.1, 0.2, 0.3]);
+    llmProvider.embed.mockResolvedValue([0.1, 0.2, 0.3]);
     chunksRepository.findNearest.mockResolvedValue([
       { id: 'chunk-1', content: 'contenido lejano', distance: 0.9 },
     ]);
@@ -104,11 +100,11 @@ describe('QueryService', () => {
     const result = await service.ask('pregunta sin relación', 1);
 
     expect(result).toEqual({ answer: NO_MATCH_ANSWER, matched: false });
-    expect(ollamaProvider.chat).not.toHaveBeenCalled();
+    expect(llmProvider.chat).not.toHaveBeenCalled();
   });
 
   it('usa DEFAULT_TOP_K cuando no se pasa topK', async () => {
-    ollamaProvider.embed.mockResolvedValue([0.1]);
+    llmProvider.embed.mockResolvedValue([0.1]);
     chunksRepository.findNearest.mockResolvedValue([]);
 
     await service.ask('pregunta cualquiera');
@@ -117,7 +113,7 @@ describe('QueryService', () => {
   });
 
   it('usa el topK pasado explícitamente', async () => {
-    ollamaProvider.embed.mockResolvedValue([0.1]);
+    llmProvider.embed.mockResolvedValue([0.1]);
     chunksRepository.findNearest.mockResolvedValue([]);
 
     await service.ask('pregunta cualquiera', 3);
@@ -126,18 +122,18 @@ describe('QueryService', () => {
   });
 
   it('propaga el error si falla el embedding de la pregunta', async () => {
-    ollamaProvider.embed.mockRejectedValue(new Error('Ollama caído'));
+    llmProvider.embed.mockRejectedValue(new Error('Ollama caído'));
 
     await expect(service.ask('pregunta')).rejects.toThrow('Ollama caído');
     expect(chunksRepository.findNearest).not.toHaveBeenCalled();
   });
 
   it('propaga el error si falla la llamada al chat model', async () => {
-    ollamaProvider.embed.mockResolvedValue([0.1]);
+    llmProvider.embed.mockResolvedValue([0.1]);
     chunksRepository.findNearest.mockResolvedValue([
       { id: 'chunk-1', content: 'contenido', distance: 0.1 },
     ]);
-    ollamaProvider.chat.mockRejectedValue(new Error('chat caído'));
+    llmProvider.chat.mockRejectedValue(new Error('chat caído'));
 
     await expect(service.ask('pregunta')).rejects.toThrow('chat caído');
   });
@@ -148,15 +144,15 @@ describe('QueryService', () => {
       text: customPromptText,
       promptForTrace: null,
     });
-    ollamaProvider.embed.mockResolvedValue([0.1]);
+    llmProvider.embed.mockResolvedValue([0.1]);
     chunksRepository.findNearest.mockResolvedValue([
       { id: 'chunk-1', content: 'contenido', distance: 0.1 },
     ]);
-    ollamaProvider.chat.mockResolvedValue('respuesta');
+    llmProvider.chat.mockResolvedValue('respuesta');
 
     await service.ask('pregunta', 1);
 
-    expect(ollamaProvider.chat).toHaveBeenCalledWith([
+    expect(llmProvider.chat).toHaveBeenCalledWith([
       { role: 'system', content: customPromptText },
       expect.objectContaining({ role: 'user' }),
     ]);
@@ -173,11 +169,11 @@ describe('QueryService', () => {
     };
     langfuseService.client = { trace: jest.fn().mockReturnValue(mockTrace) };
 
-    ollamaProvider.embed.mockResolvedValue([0.1]);
+    llmProvider.embed.mockResolvedValue([0.1]);
     chunksRepository.findNearest.mockResolvedValue([
       { id: 'chunk-1', content: 'contenido', distance: 0.1 },
     ]);
-    ollamaProvider.chat.mockResolvedValue('respuesta ok');
+    llmProvider.chat.mockResolvedValue('respuesta ok');
 
     const result = await service.ask('pregunta', 1);
 

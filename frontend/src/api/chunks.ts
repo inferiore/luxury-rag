@@ -1,4 +1,4 @@
-import { API_BASE_URL } from './config';
+import { API_BASE_URL, authHeaders } from './config';
 import {
   ApiError,
   type ChunkListItemDto,
@@ -20,6 +20,7 @@ export async function getDocumentChunks(
   try {
     response = await fetch(
       `${API_BASE_URL}/documents/${documentId}/chunks?page=${page}&limit=${limit}`,
+      { headers: { ...authHeaders() } },
     );
   } catch {
     throw new ApiError(
@@ -56,7 +57,7 @@ export async function retryChunk(
   try {
     response = await fetch(
       `${API_BASE_URL}/documents/${documentId}/chunks/${chunkId}/retry`,
-      { method: 'POST' },
+      { method: 'POST', headers: { ...authHeaders() } },
     );
   } catch {
     throw new ApiError(

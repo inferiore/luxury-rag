@@ -1,10 +1,11 @@
-import { Injectable } from '@nestjs/common';
+import { Inject, Injectable } from '@nestjs/common';
 import { ChunksRepository } from '../chunks/chunks.repository';
-import { OllamaProvider } from '../ollama/ollama.provider';
+import { LLM_PROVIDER_TOKEN } from '../llm/llm-provider';
+import type { LlmProvider } from '../llm/llm-provider';
 
 /**
  * Genera y persiste el embedding de un chunk. Orquesta ChunksRepository
- * (acceso a datos) y OllamaProvider (integración externa) — la
+ * (acceso a datos) y el proveedor LLM activo (integración externa) — la
  * decisión de qué hacer con el resultado de un job de embedding
  * (job_status, documents.status agregado) vive en el listener y en
  * DocumentsService, no aquí.
@@ -13,7 +14,7 @@ import { OllamaProvider } from '../ollama/ollama.provider';
 export class EmbeddingsService {
   constructor(
     private readonly chunksRepository: ChunksRepository,
-    private readonly ollamaProvider: OllamaProvider,
+    @Inject(LLM_PROVIDER_TOKEN) private readonly llmProvider: LlmProvider,
   ) {}
 
   async embedChunk(chunkId: string): Promise<void> {
@@ -25,7 +26,7 @@ export class EmbeddingsService {
     await this.chunksRepository.markProcessing(chunkId);
 
     try {
-      const embedding = await this.ollamaProvider.embed(chunk.content);
+      const embedding = await this.llmProvider.embed(chunk.content);
       await this.chunksRepository.markEmbeddingDone(chunkId, embedding);
     } catch (error) {
       const message =

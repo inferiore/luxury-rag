@@ -1,13 +1,9 @@
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { ChatMessage, LlmProvider } from '../llm/llm-provider';
 
 interface OllamaEmbedResponse {
   embeddings: number[][];
-}
-
-export interface OllamaChatMessage {
-  role: 'system' | 'user' | 'assistant';
-  content: string;
 }
 
 interface OllamaChatResponse {
@@ -26,12 +22,12 @@ const CHAT_TIMEOUT_MS = 120_000;
  * (`common/utils/strip-think-tags.ts`), no aquí.
  */
 @Injectable()
-export class OllamaProvider {
+export class OllamaProvider implements LlmProvider {
   constructor(private readonly configService: ConfigService) {}
 
   async embed(text: string): Promise<number[]> {
-    const baseUrl = this.configService.get<string>('ollama.baseUrl');
-    const model = this.configService.get<string>('ollama.embeddingModel');
+    const baseUrl = this.configService.get<string>('llm.baseUrl');
+    const model = this.configService.get<string>('llm.embeddingModel');
     const dimensions = this.configService.get<number>('vectorDim');
 
     const controller = new AbortController();
@@ -70,9 +66,9 @@ export class OllamaProvider {
     return embedding;
   }
 
-  async chat(messages: OllamaChatMessage[]): Promise<string> {
-    const baseUrl = this.configService.get<string>('ollama.baseUrl');
-    const model = this.configService.get<string>('ollama.chatModel');
+  async chat(messages: ChatMessage[]): Promise<string> {
+    const baseUrl = this.configService.get<string>('llm.baseUrl');
+    const model = this.configService.get<string>('llm.chatModel');
 
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), CHAT_TIMEOUT_MS);

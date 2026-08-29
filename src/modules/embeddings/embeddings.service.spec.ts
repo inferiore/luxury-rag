@@ -1,12 +1,12 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { EmbeddingsService } from './embeddings.service';
 import { ChunksRepository } from '../chunks/chunks.repository';
-import { OllamaProvider } from '../ollama/ollama.provider';
+import { LLM_PROVIDER_TOKEN, LlmProvider } from '../llm/llm-provider';
 
 describe('EmbeddingsService', () => {
   let service: EmbeddingsService;
   let chunksRepository: jest.Mocked<ChunksRepository>;
-  let ollamaProvider: jest.Mocked<OllamaProvider>;
+  let llmProvider: jest.Mocked<LlmProvider>;
 
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
@@ -22,7 +22,7 @@ describe('EmbeddingsService', () => {
           },
         },
         {
-          provide: OllamaProvider,
+          provide: LLM_PROVIDER_TOKEN,
           useValue: { embed: jest.fn() },
         },
       ],
@@ -30,7 +30,7 @@ describe('EmbeddingsService', () => {
 
     service = module.get(EmbeddingsService);
     chunksRepository = module.get(ChunksRepository);
-    ollamaProvider = module.get(OllamaProvider);
+    llmProvider = module.get(LLM_PROVIDER_TOKEN);
   });
 
   it('lanza un error si el chunk no existe', async () => {
@@ -48,12 +48,12 @@ describe('EmbeddingsService', () => {
       content: 'Tour: Guatapé.',
     } as any);
     const embedding = [0.1, 0.2, 0.3];
-    ollamaProvider.embed.mockResolvedValue(embedding);
+    llmProvider.embed.mockResolvedValue(embedding);
 
     await service.embedChunk('chunk-uuid');
 
     expect(chunksRepository.markProcessing).toHaveBeenCalledWith('chunk-uuid');
-    expect(ollamaProvider.embed).toHaveBeenCalledWith('Tour: Guatapé.');
+    expect(llmProvider.embed).toHaveBeenCalledWith('Tour: Guatapé.');
     expect(chunksRepository.markEmbeddingDone).toHaveBeenCalledWith(
       'chunk-uuid',
       embedding,
@@ -66,7 +66,7 @@ describe('EmbeddingsService', () => {
       id: 'chunk-uuid',
       content: 'Tour: Guatapé.',
     } as any);
-    ollamaProvider.embed.mockRejectedValue(new Error('Ollama caído'));
+    llmProvider.embed.mockRejectedValue(new Error('Ollama caído'));
 
     await expect(service.embedChunk('chunk-uuid')).rejects.toThrow(
       'Ollama caído',

@@ -21,6 +21,7 @@ import {
   RetryChunkResponseDto,
   RetryFailedChunksResponseDto,
 } from './dto/retry-response.dto';
+import { RateLimit } from '../auth/decorators/rate-limit.decorator';
 
 const MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024; // 10MB
 
@@ -30,6 +31,7 @@ export class DocumentsController {
 
   @Post('upload')
   @HttpCode(HttpStatus.ACCEPTED)
+  @RateLimit('upload')
   @UseInterceptors(
     FileInterceptor('file', {
       limits: { fileSize: MAX_FILE_SIZE_BYTES },

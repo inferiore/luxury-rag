@@ -71,12 +71,14 @@ services:
       # dev, not isolated (see file header). Same host.docker.internal
       # pattern as docker-compose.yml; hardcoded here for the same reason:
       # it must never be silently overridden by a host-oriented
-      # OLLAMA_BASE_URL value from .env. Only valid on Docker Desktop
+      # BASE_URL value from .env. Only valid on Docker Desktop
       # (Mac/Windows) — see .env.example.
-      OLLAMA_BASE_URL: http://host.docker.internal:11434
+      BASE_URL: http://host.docker.internal:11434
       EMBEDDING_MODEL: ${EMBEDDING_MODEL:-qwen3-embedding}
       CHAT_MODEL: ${CHAT_MODEL:-qwen3:8b}
       VECTOR_DIM: ${VECTOR_DIM:-1536}
+      LLM_PROVIDER: ${LLM_PROVIDER:-ollama}
+      LLM_API_KEY: ${LLM_API_KEY:-}
       DEFAULT_TOP_K: ${DEFAULT_TOP_K:-1}
       SIMILARITY_THRESHOLD: ${SIMILARITY_THRESHOLD:-0.4}
       MAX_UPLOAD_ITEMS: ${MAX_UPLOAD_ITEMS:-2000}

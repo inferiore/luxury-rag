@@ -1,56 +1,40 @@
 services:
-  postgres:
-    image: pgvector/pgvector:pg16
-    container_name: rag-postgres
-    restart: unless-stopped
-    ports:
-      - "${POSTGRES_PORT:-5432}:5432"
-    environment:
-      POSTGRES_USER: ${POSTGRES_USER:-rag_user}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
-      POSTGRES_DB: ${POSTGRES_DB:-rag_db}
-    volumes:
-      - rag_pgdata:/var/lib/postgresql/data
-      - ./db/init:/docker-entrypoint-initdb.d:ro
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-rag_user} -d ${POSTGRES_DB:-rag_db}"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
-
   app:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        VITE_API_BASE_URL: ${VITE_API_BASE_URL:-}
+        VITE_API_KEY: ${VITE_API_KEY}
     container_name: rag-app
     restart: unless-stopped
-    depends_on:
-      postgres:
-        condition: service_healthy
     environment:
       NODE_ENV: ${NODE_ENV:-production}
       PORT: ${PORT:-3000}
-      # POSTGRES_HOST/PORT are fixed on purpose: inside this compose network
-      # the app always reaches Postgres via the "postgres" service name on
-      # its container port 5432, regardless of what POSTGRES_HOST/PORT are
-      # set to in .env for other run modes (e.g. `npm run start:dev` on the
-      # host, which needs POSTGRES_HOST=localhost instead).
-      POSTGRES_HOST: postgres
-      POSTGRES_PORT: 5432
-      POSTGRES_USER: ${POSTGRES_USER:-rag_user}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
-      POSTGRES_DB: ${POSTGRES_DB:-rag_db}
-      # Ollama runs on Eder's host machine, not in a container. From inside
-      # this container, http://localhost:11434 would point at the container
-      # itself, not the host — that's the classic confusing "Ollama no
-      # responde" failure. host.docker.internal is Docker Desktop's DNS name
-      # for the host and is hardcoded here (not read from .env) so it can
-      # never be silently overridden by a host-oriented OLLAMA_BASE_URL
-      # value. Only valid on Docker Desktop (Mac/Windows) — see .env.example.
-      OLLAMA_BASE_URL: http://host.docker.internal:11434
+      # Producción se conecta a un proyecto Supabase Postgres administrado
+      # (conexión directa, sin pooler) en vez de un contenedor local — no
+      # hay servicio "postgres" en este compose. Estos 6 valores deben venir
+      # de un .env real apuntando a las credenciales de Supabase; no hay
+      # defaults sensatos que puedan sustituir a un self-hosted local aquí.
+      # Ver .env.example para el detalle de cada valor.
+      POSTGRES_HOST: ${POSTGRES_HOST}
+      POSTGRES_PORT: ${POSTGRES_PORT:-5432}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_SSL: ${POSTGRES_SSL:-true}
+      # BASE_URL ya NO se hardcodea a host.docker.internal — ahora sirve
+      # tanto para Ollama local como para un proveedor cloud, y se lee de
+      # .env como todo lo demás. Si LLM_PROVIDER=ollama y este contenedor
+      # corre en Docker, .env DEBE tener BASE_URL=http://host.docker.internal:11434
+      # explícito, o el contenedor intentará conectarse a sí mismo
+      # (localhost) y fallará con "Ollama no responde". Ver .env.example.
+      BASE_URL: ${BASE_URL}
       EMBEDDING_MODEL: ${EMBEDDING_MODEL:-qwen3-embedding}
       CHAT_MODEL: ${CHAT_MODEL:-qwen3:8b}
       VECTOR_DIM: ${VECTOR_DIM:-1536}
+      LLM_PROVIDER: ${LLM_PROVIDER:-ollama}
+      LLM_API_KEY: ${LLM_API_KEY:-}
       DEFAULT_TOP_K: ${DEFAULT_TOP_K:-1}
       SIMILARITY_THRESHOLD: ${SIMILARITY_THRESHOLD:-0.4}
       LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-}
@@ -61,8 +45,8 @@ services:
       # host-gateway makes host.docker.internal resolve on Linux Docker
       # Engine too; no-op / already default on Docker Desktop for Mac.
       - "host.docker.internal:host-gateway"
-    ports:
-      - "${PORT:-3000}:3000"
+    expose:
+      - "3000"
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://localhost:3000/health || exit 1"]
       interval: 10s
@@ -70,5 +54,36 @@ services:
       retries: 5
       start_period: 15s
 
-volumes:
-  rag_pgdata:
+  nginx:
+    image: nginx:alpine
+    container_name: rag-nginx
+    restart: unless-stopped
+    # Gateado con un profile a propósito: `docker compose -f docker-compose.yml
+    # -f docker-compose.dev.yml up` (dev local) trae TODOS los servicios de
+    # docker-compose.yml por default, no solo los que docker-compose.dev.yml
+    # sobreescribe explícitamente — sin este profile, dev también intentaría
+    # levantar nginx (crashea: no existen los certificados SSL de
+    # rag.luxuryhorizon.lat en local) y un certbot inútil. En el VPS de
+    # producción, .env real debe tener `COMPOSE_PROFILES=production` (ver
+    # .env.example) para que el `docker compose up -d --build` documentado en
+    # el README/CI siga funcionando sin flags extra.
+    profiles: ["production"]
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./certbot/conf:/etc/letsencrypt:ro
+      - ./certbot/www:/var/www/certbot
+    depends_on:
+      app:
+        condition: service_healthy
+
+  certbot:
+    image: certbot/certbot
+    profiles: ["production"]
+    volumes:
+      - ./certbot/conf:/etc/letsencrypt
+      - ./certbot/www:/var/www/certbot
+    entrypoint: "/bin/sh -c 'trap exit TERM; while :; do certbot renew --quiet; sleep 12h & wait $${!}; done;'"
+    restart: unless-stopped

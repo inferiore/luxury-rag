@@ -19,3 +19,6 @@
 
 # IDE
 .vscode/
+
+# certificados SSL (Let's Encrypt, viven solo en el servidor)
+certbot/conf/

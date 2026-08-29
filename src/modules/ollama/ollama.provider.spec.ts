@@ -7,9 +7,9 @@ describe('OllamaProvider', () => {
   const originalFetch = global.fetch;
 
   const configValues: Record<string, unknown> = {
-    'ollama.baseUrl': 'http://localhost:11434',
-    'ollama.embeddingModel': 'qwen3-embedding',
-    'ollama.chatModel': 'qwen3:8b',
+    'llm.baseUrl': 'http://localhost:11434',
+    'llm.embeddingModel': 'qwen3-embedding',
+    'llm.chatModel': 'qwen3:8b',
     vectorDim: 1536,
   };
 

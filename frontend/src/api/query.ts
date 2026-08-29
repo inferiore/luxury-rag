@@ -1,4 +1,4 @@
-import { API_BASE_URL } from './config';
+import { API_BASE_URL, authHeaders } from './config';
 import { ApiError, type QueryErrorResponse, type QueryRequest, type QueryResponse } from './types';
 
 /**
@@ -13,7 +13,7 @@ export async function askQuestion(question: string): Promise<QueryResponse> {
   try {
     response = await fetch(`${API_BASE_URL}/query`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
       body: JSON.stringify(payload),
     });
   } catch {
