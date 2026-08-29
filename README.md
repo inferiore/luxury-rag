@@ -77,12 +77,18 @@ cp .env.example .env   # completar Postgres/Langfuse/etc.
 docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d
 ```
 
-Esto levanta `postgres` + `app` con **hot reload**: el contenedor corre `npm run migration:run && npm run start:dev` y el volumen `./src` está montado, así que los cambios en `.ts` se recargan solos. Backend en `http://localhost:3000`.
+Esto levanta `postgres` + `app` con **hot reload**: el contenedor corre `npm run migration:run && npm run start:dev` y el volumen `./src` está montado, así que los cambios en `.ts` se recargan solos — guardas un archivo, `nest --watch` recompila y reinicia, y ya puedes pegarle al endpoint que tocaste sin hacer nada más. Backend en `http://localhost:3000`.
 
 **Importante:** editar `.env` no se aplica solo — hay que recrear el contenedor (`docker restart` NO relee `.env`):
 
 ```bash
 docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --no-deps app
+```
+
+**Importante también:** el hot reload solo cubre cambios en archivos `.ts` — el volumen montado es `./src`, no `node_modules`. Si agregas o actualizas una dependencia en `package.json`, hay que reconstruir la imagen una vez (el `node_modules` de la imagen queda desactualizado si no):
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build
 ```
 
 **Frontend** (`frontend/`, Vite):
@@ -163,7 +169,15 @@ Prerrequisito del servidor: Docker + el plugin de Docker Compose ya instalados (
 
 ### CI/CD
 
-`.github/workflows/deploy.yml` — en cada push a `main`: corre `npm ci && npm run build && npm test`, y solo si pasa, hace SSH al servidor y corre `git pull && docker compose up -d --build`. A diferencia del pipeline del sitio principal (que hardcodea IP/usuario en el YAML), acá host/usuario/ruta también van como secrets, no solo la llave SSH. Secrets a configurar en `inferiore/luxury-rag` → Settings → Secrets and variables → Actions:
+`.github/workflows/deploy.yml` — en cada push a `main`, tres jobs en cadena:
+
+1. **`test`** — `npm ci && npm run build && npm test`.
+2. **`build-and-push`** — si `test` pasa, construye la imagen Docker (con el frontend embebido, ver arriba) y la publica en **GitHub Container Registry** (`ghcr.io/inferiore/luxury-rag:latest`), autenticado con el `GITHUB_TOKEN` automático de Actions (no hace falta un secret propio para publicar).
+3. **`deploy`** — hace SSH al servidor y corre `git pull && docker compose pull && docker compose up -d` — **no reconstruye la imagen en el servidor**, descarga la ya compilada en el paso anterior. `docker-compose.yml` conserva también el bloque `build:` como fallback manual (`docker compose up -d --build`) si hace falta reconstruir localmente.
+
+**Paso manual único**: como el paquete en ghcr.io nace privado aunque el repo sea público, hay que marcarlo como público una sola vez (GitHub → perfil → Packages → `luxury-rag` → Package settings → Change visibility → Public) para que el servidor pueda hacer `docker compose pull` sin credenciales.
+
+A diferencia del pipeline del sitio principal (que hardcodea IP/usuario en el YAML), acá host/usuario/ruta también van como secrets, no solo la llave SSH. Secrets a configurar en `inferiore/luxury-rag` → Settings → Secrets and variables → Actions:
 
 | Secret | Contenido |
 |---|---|
@@ -171,6 +185,7 @@ Prerrequisito del servidor: Docker + el plugin de Docker Compose ya instalados (
 | `RAG_SSH_USER` | Usuario SSH |
 | `RAG_DEPLOY_SSH_KEY` | Llave privada SSH |
 | `RAG_DEPLOY_PATH` | Ruta del repo clonado en el servidor |
+| `VITE_API_KEY` | Key del cliente `demo-frontend` (se embebe en el bundle del frontend durante el build en CI) |
 
 ## Desarrollo guiado por specs
 

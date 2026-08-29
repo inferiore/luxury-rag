@@ -65,6 +65,12 @@ services:
       # debe fijarlo explícitamente aquí, sin importar qué tenga .env para
       # otros modos de ejecución (ej. producción contra OpenRouter/Gemini).
       BASE_URL: http://host.docker.internal:11434
+    # Producción (docker-compose.yml) ya no publica el puerto al host
+    # directo — nginx es el único entrypoint ahí. Dev sigue necesitando
+    # acceso directo a :3000 (sin nginx de por medio), así que hay que
+    # volver a publicarlo acá.
+    ports:
+      - "${PORT:-3000}:3000"
     volumes:
       - ./src:/app/src
     # Runs pending migrations (via ts-node, available in the `builder`

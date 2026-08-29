@@ -1,5 +1,11 @@
 services:
   app:
+    # La imagen se construye y publica en GitHub Actions (ghcr.io) — el
+    # deploy en el servidor hace `docker compose pull` y usa esa imagen ya
+    # compilada, no reconstruye localmente. El bloque `build:` se conserva
+    # como fallback para `docker compose up -d --build` en local/dev o si
+    # ghcr.io no está disponible.
+    image: ghcr.io/inferiore/luxury-rag:latest
     build:
       context: .
       dockerfile: Dockerfile
