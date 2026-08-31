@@ -1,18 +1,20 @@
 import { ConfigService } from '@nestjs/config';
 import { Test, TestingModule } from '@nestjs/testing';
 
-// `LangfuseService` importa el SDK real de `langfuse`, que hace un
-// `import()` dinámico a nivel de módulo incompatible con ts-jest sin
-// `--experimental-vm-modules` — se mockea para poder cargar el módulo aquí
-// (no se usa el mock directamente: en los tests se inyecta un stub simple
-// de `LangfuseService` con `client: null`).
-jest.mock('langfuse', () => ({
-  Langfuse: jest.fn().mockImplementation(() => ({
-    trace: jest.fn(),
-    shutdownAsync: jest.fn().mockResolvedValue(undefined),
-  })),
-}));
+// `QueryService` crea sus observaciones con `startObservation` real de
+// `@langfuse/tracing` (SDK v5, OTEL-based) — es seguro de llamar tal cual en
+// tests sin ningún `LangfuseSpanProcessor` registrado (no hay exportador
+// activo, así que las observaciones no van a ningún lado; el SDK está
+// diseñado para no lanzar). Se envuelve en `jest.fn()` únicamente para poder
+// inyectar un fallo puntual en el test de resiliencia del tracing más abajo,
+// dejando pasar la implementación real en el resto de los tests.
+jest.mock('@langfuse/tracing', () => {
+  const actual =
+    jest.requireActual<typeof import('@langfuse/tracing')>('@langfuse/tracing');
+  return { ...actual, startObservation: jest.fn(actual.startObservation) };
+});
 
+import * as tracing from '@langfuse/tracing';
 import { QueryService, NO_MATCH_ANSWER, SYSTEM_PROMPT } from './query.service';
 import { ChunksRepository } from '../chunks/chunks.repository';
 import { LLM_PROVIDER_TOKEN, LlmProvider } from '../llm/llm-provider';
@@ -23,7 +25,6 @@ describe('QueryService', () => {
   let chunksRepository: jest.Mocked<Pick<ChunksRepository, 'findNearest'>>;
   let llmProvider: jest.Mocked<Pick<LlmProvider, 'embed' | 'chat'>>;
   let langfuseService: {
-    client: null | { trace: jest.Mock };
     getSystemPrompt: jest.Mock;
   };
 
@@ -37,11 +38,15 @@ describe('QueryService', () => {
     chunksRepository = { findNearest: jest.fn() };
     llmProvider = { embed: jest.fn(), chat: jest.fn() };
     langfuseService = {
-      client: null,
       getSystemPrompt: jest
         .fn()
         .mockResolvedValue({ text: SYSTEM_PROMPT, promptForTrace: null }),
     };
+    (tracing.startObservation as jest.Mock).mockImplementation(
+      jest.requireActual<typeof import('@langfuse/tracing')>(
+        '@langfuse/tracing',
+      ).startObservation,
+    );
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -226,16 +231,20 @@ describe('QueryService', () => {
     ]);
   });
 
-  it('no rompe /query si trace.generation() lanza una excepción (tracing no-fatal, criterio 15 de spec 09)', async () => {
-    const mockTrace = {
-      span: jest.fn().mockReturnValue({ end: jest.fn() }),
-      generation: jest.fn().mockImplementation(() => {
-        throw new Error('Langfuse caído');
-      }),
-      event: jest.fn(),
-      update: jest.fn(),
+  it('no rompe /query si la generation de Langfuse lanza una excepción (tracing no-fatal, criterio 15 de spec 09)', async () => {
+    const throwLangfuseDown = (): never => {
+      throw new Error('Langfuse caído');
     };
-    langfuseService.client = { trace: jest.fn().mockReturnValue(mockTrace) };
+    const mockRootSpan = {
+      startObservation: jest.fn((name: string) =>
+        name === 'chat'
+          ? throwLangfuseDown()
+          : { update: jest.fn().mockReturnThis(), end: jest.fn() },
+      ),
+      update: jest.fn().mockReturnThis(),
+      end: jest.fn(),
+    };
+    (tracing.startObservation as jest.Mock).mockReturnValue(mockRootSpan);
 
     llmProvider.embed.mockResolvedValue([0.1]);
     chunksRepository.findNearest.mockResolvedValue([
@@ -246,6 +255,10 @@ describe('QueryService', () => {
     const result = await service.ask('pregunta', 1);
 
     expect(result).toEqual({ answer: 'respuesta ok', matched: true });
-    expect(mockTrace.generation).toHaveBeenCalled();
+    expect(mockRootSpan.startObservation).toHaveBeenCalledWith(
+      'chat',
+      expect.anything(),
+      expect.objectContaining({ asType: 'generation' }),
+    );
   });
 });

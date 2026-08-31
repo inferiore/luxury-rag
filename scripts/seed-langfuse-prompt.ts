@@ -1,5 +1,5 @@
 import * as dotenv from 'dotenv';
-import { Langfuse } from 'langfuse';
+import { LangfuseClient } from '@langfuse/client';
 import { SYSTEM_PROMPT } from '../src/modules/query/query.service';
 
 // Corre fuera del contexto de Nest (igual que src/database/data-source.ts),
@@ -12,7 +12,7 @@ dotenv.config();
 const PROMPT_NAME = 'query-system-prompt';
 
 async function main() {
-  const client = new Langfuse({
+  const client = new LangfuseClient({
     publicKey: process.env.LANGFUSE_PUBLIC_KEY,
     secretKey: process.env.LANGFUSE_SECRET_KEY,
     baseUrl: process.env.LANGFUSE_HOST ?? process.env.LANGFUSE_BASE_URL,
@@ -20,7 +20,7 @@ async function main() {
 
   let existing;
   try {
-    existing = await client.getPrompt(PROMPT_NAME, undefined, {
+    existing = await client.prompt.get(PROMPT_NAME, {
       label: 'production',
       type: 'text',
     });
@@ -29,7 +29,7 @@ async function main() {
   }
 
   if (!existing) {
-    await client.createPrompt({
+    await client.prompt.create({
       type: 'text',
       name: PROMPT_NAME,
       prompt: SYSTEM_PROMPT,
