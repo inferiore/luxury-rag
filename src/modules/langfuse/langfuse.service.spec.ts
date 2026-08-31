@@ -2,18 +2,18 @@ import { Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Test, TestingModule } from '@nestjs/testing';
 
-// El SDK real de `langfuse` hace un `import()` dinámico de `fs`/`crypto` a
-// nivel de módulo (para soportar Deno/Edge/Node), lo que rompe bajo ts-jest
-// (CJS) sin `--experimental-vm-modules`. Se mockea para poder testear
-// `LangfuseService` sin llamadas reales ni ese crash.
+// El SDK real de `@langfuse/client` hace llamadas HTTP reales al construirse
+// el cliente de API generado. Se mockea para poder testear `LangfuseService`
+// sin llamadas reales.
 const mockLangfuseClient = {
-  trace: jest.fn(),
-  shutdownAsync: jest.fn().mockResolvedValue(undefined),
-  getPrompt: jest.fn(),
+  shutdown: jest.fn().mockResolvedValue(undefined),
+  prompt: {
+    get: jest.fn(),
+  },
 };
 
-jest.mock('langfuse', () => ({
-  Langfuse: jest.fn().mockImplementation(() => mockLangfuseClient),
+jest.mock('@langfuse/client', () => ({
+  LangfuseClient: jest.fn().mockImplementation(() => mockLangfuseClient),
 }));
 
 import { LangfuseService } from './langfuse.service';
@@ -21,7 +21,7 @@ import { SYSTEM_PROMPT } from '../query/system-prompt.constant';
 
 describe('LangfuseService', () => {
   beforeEach(() => {
-    mockLangfuseClient.getPrompt.mockReset();
+    mockLangfuseClient.prompt.get.mockReset();
   });
 
   const buildService = async (
@@ -120,12 +120,12 @@ describe('LangfuseService', () => {
       const result = await service.getSystemPrompt();
 
       expect(result).toEqual({ text: SYSTEM_PROMPT, promptForTrace: null });
-      expect(mockLangfuseClient.getPrompt).not.toHaveBeenCalled();
+      expect(mockLangfuseClient.prompt.get).not.toHaveBeenCalled();
     });
 
-    it('devuelve el texto y el promptForTrace del SDK cuando getPrompt resuelve (criterio 11)', async () => {
+    it('devuelve el texto y el promptForTrace del SDK cuando prompt.get resuelve (criterio 11)', async () => {
       const fakePrompt = { prompt: SYSTEM_PROMPT };
-      mockLangfuseClient.getPrompt.mockResolvedValue(fakePrompt);
+      mockLangfuseClient.prompt.get.mockResolvedValue(fakePrompt);
 
       const service = await buildService({
         'langfuse.publicKey': 'pk-test',
@@ -137,9 +137,8 @@ describe('LangfuseService', () => {
 
       expect(result.text).toBe(SYSTEM_PROMPT);
       expect(result.promptForTrace).toBe(fakePrompt);
-      expect(mockLangfuseClient.getPrompt).toHaveBeenCalledWith(
+      expect(mockLangfuseClient.prompt.get).toHaveBeenCalledWith(
         'query-system-prompt',
-        undefined,
         expect.objectContaining({
           label: 'production',
           type: 'text',
@@ -148,8 +147,8 @@ describe('LangfuseService', () => {
       );
     });
 
-    it('devuelve el fallback local sin propagar el error si getPrompt rechaza (criterio 12)', async () => {
-      mockLangfuseClient.getPrompt.mockRejectedValue(
+    it('devuelve el fallback local sin propagar el error si prompt.get rechaza (criterio 12)', async () => {
+      mockLangfuseClient.prompt.get.mockRejectedValue(
         new Error('Langfuse caído'),
       );
 

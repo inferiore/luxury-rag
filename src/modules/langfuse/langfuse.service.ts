@@ -1,22 +1,26 @@
 import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { Langfuse } from 'langfuse';
-import type { TextPromptClient } from 'langfuse';
+import { LangfuseClient } from '@langfuse/client';
+import type { TextPromptClient } from '@langfuse/client';
 import { SYSTEM_PROMPT } from '../query/system-prompt.constant';
 
 const SYSTEM_PROMPT_NAME = 'query-system-prompt';
 
 /**
- * Wrapper fino sobre el SDK de Langfuse. Si `LANGFUSE_PUBLIC_KEY`/
+ * Wrapper fino sobre `@langfuse/client` (SDK v5) — únicamente para Prompt
+ * Management. El tracing de `/query` NO pasa por aquí desde la migración a
+ * v4/v5: vive en `@langfuse/tracing` + `@langfuse/otel`, registrado a nivel
+ * de proceso en `src/instrumentation.ts` (separación de responsabilidades
+ * que el propio SDK adoptó en v4). Si `LANGFUSE_PUBLIC_KEY`/
  * `LANGFUSE_SECRET_KEY` no están configuradas, `client` queda `null` y el
- * tracing se deshabilita silenciosamente (loguea y sigue) — el tracing es
- * best-effort, nunca debe romper `/query` (criterio de aceptación #9 de
- * 04-query-endpoint.md).
+ * prompt management se deshabilita silenciosamente (loguea y sigue) — sigue
+ * siendo best-effort, nunca debe romper `/query` (criterio de aceptación #9
+ * de 04-query-endpoint.md).
  */
 @Injectable()
 export class LangfuseService implements OnModuleDestroy {
   private readonly logger = new Logger(LangfuseService.name);
-  readonly client: Langfuse | null;
+  readonly client: LangfuseClient | null;
 
   constructor(private readonly configService: ConfigService) {
     const publicKey = this.configService.get<string>('langfuse.publicKey');
@@ -41,7 +45,7 @@ export class LangfuseService implements OnModuleDestroy {
       );
     }
 
-    this.client = new Langfuse({ publicKey, secretKey, baseUrl });
+    this.client = new LangfuseClient({ publicKey, secretKey, baseUrl });
 
     this.logger.log(`Cliente de Langfuse inicializado — host: ${baseUrl}`);
   }
@@ -65,16 +69,12 @@ export class LangfuseService implements OnModuleDestroy {
       return { text: SYSTEM_PROMPT, promptForTrace: null };
     }
     try {
-      const prompt = await this.client.getPrompt(
-        SYSTEM_PROMPT_NAME,
-        undefined,
-        {
-          label: 'production',
-          type: 'text',
-          cacheTtlSeconds: 60,
-          fallback: SYSTEM_PROMPT,
-        },
-      );
+      const prompt = await this.client.prompt.get(SYSTEM_PROMPT_NAME, {
+        label: 'production',
+        type: 'text',
+        cacheTtlSeconds: 60,
+        fallback: SYSTEM_PROMPT,
+      });
       return { text: prompt.prompt, promptForTrace: prompt };
     } catch (error) {
       this.logWarn('No se pudo obtener el system prompt de Langfuse', error);
@@ -87,7 +87,7 @@ export class LangfuseService implements OnModuleDestroy {
       return;
     }
     try {
-      await this.client.shutdownAsync();
+      await this.client.shutdown();
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       this.logger.warn(`Error al cerrar el cliente de Langfuse: ${message}`);

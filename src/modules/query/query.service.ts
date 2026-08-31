@@ -1,11 +1,8 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import type {
-  LangfuseGenerationClient,
-  LangfuseSpanClient,
-  LangfuseTraceClient,
-  TextPromptClient,
-} from 'langfuse';
+import { startObservation } from '@langfuse/tracing';
+import type { LangfuseGeneration, LangfuseSpan } from '@langfuse/tracing';
+import type { TextPromptClient } from '@langfuse/client';
 import { ChunksRepository, NearestChunk } from '../chunks/chunks.repository';
 import { LLM_PROVIDER_TOKEN } from '../llm/llm-provider';
 import type { LlmProvider } from '../llm/llm-provider';
@@ -95,7 +92,7 @@ export class QueryService {
   }
 
   private async askChatModel(
-    trace: LangfuseTraceClient | null,
+    trace: LangfuseSpan | null,
     question: string,
     candidates: NearestChunk[],
   ): Promise<string> {
@@ -135,44 +132,46 @@ export class QueryService {
   }
 
   // --- Helpers de tracing: best-effort, nunca rompen /query ---
+  //
+  // Migración v4/v5 (OTEL-based): ya no dependen de `LangfuseService.client`
+  // — `startObservation` de `@langfuse/tracing` funciona contra el tracer
+  // OTEL global registrado en `src/instrumentation.ts`; si Langfuse no está
+  // configurado ahí, el `LangfuseSpanProcessor` nunca se registra y estas
+  // observaciones simplemente no se exportan a ningún lado (no-op), sin
+  // necesidad de un chequeo de cliente nulo en este servicio. El try/catch
+  // se conserva de todos modos como defensa explícita — no confiar
+  // únicamente en la garantía del SDK de no lanzar.
 
-  private startTrace(
-    question: string,
-    topK: number,
-  ): LangfuseTraceClient | null {
-    const client = this.langfuseService.client;
-    if (!client) {
-      return null;
-    }
+  private startTrace(question: string, topK: number): LangfuseSpan | null {
     try {
-      return client.trace({ name: 'query', input: { question, topK } });
+      return startObservation('query', { input: { question, topK } });
     } catch (error) {
       this.logWarn('No se pudo iniciar el trace de Langfuse', error);
       return null;
     }
   }
 
-  private endTrace(trace: LangfuseTraceClient | null, output: unknown): void {
+  private endTrace(trace: LangfuseSpan | null, output: unknown): void {
     if (!trace) {
       return;
     }
     try {
-      trace.update({ output });
+      trace.update({ output }).end();
     } catch (error) {
       this.logWarn('No se pudo actualizar el trace de Langfuse', error);
     }
   }
 
   private startSpan(
-    trace: LangfuseTraceClient | null,
+    trace: LangfuseSpan | null,
     name: string,
     input?: unknown,
-  ): LangfuseSpanClient | null {
+  ): LangfuseSpan | null {
     if (!trace) {
       return null;
     }
     try {
-      return trace.span({ name, input });
+      return trace.startObservation(name, { input });
     } catch (error) {
       this.logWarn(`No se pudo iniciar el span '${name}' de Langfuse`, error);
       return null;
@@ -180,7 +179,7 @@ export class QueryService {
   }
 
   private endSpan(
-    span: LangfuseSpanClient | null,
+    span: LangfuseSpan | null,
     output?: unknown,
     error?: unknown,
   ): void {
@@ -190,26 +189,42 @@ export class QueryService {
     const hasError = error !== undefined;
     const statusMessage = hasError ? this.errorMessage(error) : undefined;
     try {
-      span.end({
-        output,
-        level: hasError ? 'ERROR' : undefined,
-        statusMessage,
-      });
+      span
+        .update({
+          output,
+          level: hasError ? 'ERROR' : undefined,
+          statusMessage,
+        })
+        .end();
     } catch (spanError) {
       this.logWarn('No se pudo cerrar un span de Langfuse', spanError);
     }
   }
 
   private startGeneration(
-    trace: LangfuseTraceClient | null,
+    trace: LangfuseSpan | null,
     name: string,
     params: { input?: unknown; model?: string; prompt?: TextPromptClient },
-  ): LangfuseGenerationClient | null {
+  ): LangfuseGeneration | null {
     if (!trace) {
       return null;
     }
     try {
-      return trace.generation({ name, ...params });
+      return trace.startObservation(
+        name,
+        {
+          input: params.input,
+          model: params.model,
+          prompt: params.prompt
+            ? {
+                name: params.prompt.name,
+                version: params.prompt.version,
+                isFallback: params.prompt.isFallback,
+              }
+            : undefined,
+        },
+        { asType: 'generation' },
+      );
     } catch (error) {
       this.logWarn(
         `No se pudo iniciar la generation '${name}' de Langfuse`,
@@ -220,7 +235,7 @@ export class QueryService {
   }
 
   private endGeneration(
-    generation: LangfuseGenerationClient | null,
+    generation: LangfuseGeneration | null,
     output?: unknown,
     error?: unknown,
   ): void {
@@ -230,18 +245,20 @@ export class QueryService {
     const hasError = error !== undefined;
     const statusMessage = hasError ? this.errorMessage(error) : undefined;
     try {
-      generation.end({
-        output,
-        level: hasError ? 'ERROR' : undefined,
-        statusMessage,
-      });
+      generation
+        .update({
+          output,
+          level: hasError ? 'ERROR' : undefined,
+          statusMessage,
+        })
+        .end();
     } catch (genError) {
       this.logWarn('No se pudo cerrar una generation de Langfuse', genError);
     }
   }
 
   private trackEvent(
-    trace: LangfuseTraceClient | null,
+    trace: LangfuseSpan | null,
     name: string,
     input: unknown,
   ): void {
@@ -249,7 +266,7 @@ export class QueryService {
       return;
     }
     try {
-      trace.event({ name, input });
+      trace.startObservation(name, { input }, { asType: 'event' });
     } catch (error) {
       this.logWarn(
         `No se pudo registrar el evento '${name}' de Langfuse`,
