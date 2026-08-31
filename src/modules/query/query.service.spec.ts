@@ -28,7 +28,7 @@ describe('QueryService', () => {
   };
 
   const configValues: Record<string, unknown> = {
-    'query.defaultTopK': 1,
+    'query.defaultTopK': 5,
     'query.similarityThreshold': 0.4,
     'llm.chatModel': 'qwen3:8b',
   };
@@ -103,13 +103,81 @@ describe('QueryService', () => {
     expect(llmProvider.chat).not.toHaveBeenCalled();
   });
 
+  it('filtra individualmente cada candidato contra el umbral (distancias mixtas)', async () => {
+    llmProvider.embed.mockResolvedValue([0.1, 0.2, 0.3]);
+    chunksRepository.findNearest.mockResolvedValue([
+      { id: 'chunk-1', content: 'Tour Guatapé: 180000 COP', distance: 0.1 },
+      { id: 'chunk-2', content: 'Tour Comuna 13: 120000 COP', distance: 0.35 },
+      { id: 'chunk-3', content: 'Tour lejano irrelevante', distance: 0.6 },
+    ]);
+    llmProvider.chat.mockResolvedValue('respuesta');
+
+    const result = await service.ask('¿Qué tours tienen?', 3);
+
+    expect(result.matched).toBe(true);
+    const [messages] = llmProvider.chat.mock.calls[0];
+    const userMessage = messages.find(
+      (m: { role: string }) => m.role === 'user',
+    );
+    expect(userMessage.content).toContain('Tour Guatapé: 180000 COP');
+    expect(userMessage.content).toContain('Tour Comuna 13: 120000 COP');
+    expect(userMessage.content).not.toContain('Tour lejano irrelevante');
+  });
+
+  it('incluye todos los candidatos cuando todos están dentro del umbral', async () => {
+    llmProvider.embed.mockResolvedValue([0.1, 0.2, 0.3]);
+    chunksRepository.findNearest.mockResolvedValue([
+      { id: 'chunk-1', content: 'Contenido A', distance: 0.1 },
+      { id: 'chunk-2', content: 'Contenido B', distance: 0.2 },
+      { id: 'chunk-3', content: 'Contenido C', distance: 0.3 },
+    ]);
+    llmProvider.chat.mockResolvedValue('respuesta');
+
+    const result = await service.ask('¿Qué tours tienen?', 3);
+
+    expect(result.matched).toBe(true);
+    const [messages] = llmProvider.chat.mock.calls[0];
+    const userMessage = messages.find(
+      (m: { role: string }) => m.role === 'user',
+    );
+    expect(userMessage.content).toContain('Contenido A');
+    expect(userMessage.content).toContain('Contenido B');
+    expect(userMessage.content).toContain('Contenido C');
+  });
+
+  it('devuelve "datos no encontrados" cuando todos los candidatos superan el umbral, aun con varios candidatos', async () => {
+    llmProvider.embed.mockResolvedValue([0.1, 0.2, 0.3]);
+    chunksRepository.findNearest.mockResolvedValue([
+      { id: 'chunk-1', content: 'Contenido A', distance: 0.5 },
+      { id: 'chunk-2', content: 'Contenido B', distance: 0.6 },
+      { id: 'chunk-3', content: 'Contenido C', distance: 0.7 },
+    ]);
+
+    const result = await service.ask('pregunta sin relación', 3);
+
+    expect(result).toEqual({ answer: NO_MATCH_ANSWER, matched: false });
+    expect(llmProvider.chat).not.toHaveBeenCalled();
+  });
+
+  it('incluye el candidato cuando la distancia es exactamente igual al umbral', async () => {
+    llmProvider.embed.mockResolvedValue([0.1]);
+    chunksRepository.findNearest.mockResolvedValue([
+      { id: 'chunk-1', content: 'Contenido límite', distance: 0.4 },
+    ]);
+    llmProvider.chat.mockResolvedValue('respuesta');
+
+    const result = await service.ask('pregunta', 1);
+
+    expect(result.matched).toBe(true);
+  });
+
   it('usa DEFAULT_TOP_K cuando no se pasa topK', async () => {
     llmProvider.embed.mockResolvedValue([0.1]);
     chunksRepository.findNearest.mockResolvedValue([]);
 
     await service.ask('pregunta cualquiera');
 
-    expect(chunksRepository.findNearest).toHaveBeenCalledWith([0.1], 1);
+    expect(chunksRepository.findNearest).toHaveBeenCalledWith([0.1], 5);
   });
 
   it('usa el topK pasado explícitamente', async () => {

@@ -67,21 +67,28 @@ export class QueryService {
       queryEmbedding,
       topK,
     );
+    const relevant = candidates.filter(
+      (c) => c.distance <= similarityThreshold,
+    );
     this.endSpan(searchSpan, {
-      candidates: candidates.map((c) => ({ id: c.id, distance: c.distance })),
+      candidates: candidates.map((c) => ({
+        id: c.id,
+        distance: c.distance,
+        withinThreshold: c.distance <= similarityThreshold,
+      })),
+      relevantCount: relevant.length,
     });
 
-    const best = candidates[0];
-    if (!best || best.distance > similarityThreshold) {
+    if (relevant.length === 0) {
       this.trackEvent(trace, 'below_threshold', {
-        distance: best?.distance ?? null,
+        distance: candidates[0]?.distance ?? null,
         threshold: similarityThreshold,
       });
       this.endTrace(trace, { answer: NO_MATCH_ANSWER, matched: false });
       return { answer: NO_MATCH_ANSWER, matched: false };
     }
 
-    const answer = await this.askChatModel(trace, question, candidates);
+    const answer = await this.askChatModel(trace, question, relevant);
     this.endTrace(trace, { answer, matched: true });
 
     return { answer, matched: true };
@@ -95,7 +102,9 @@ export class QueryService {
     const { text: systemPromptText, promptForTrace } =
       await this.langfuseService.getSystemPrompt();
 
-    const context = candidates.map((c) => c.content).join('\n');
+    const context = candidates
+      .map((c, i) => `[Tour ${i + 1}]\n${c.content}`)
+      .join('\n\n---\n\n');
     const messages = [
       { role: 'system' as const, content: systemPromptText },
       {

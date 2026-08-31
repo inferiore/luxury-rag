@@ -48,7 +48,7 @@ export const envValidationSchema = Joi.object({
   MAX_ITEM_SIZE_BYTES: Joi.number().default(100000),
 
   // --- /query behavior ---
-  DEFAULT_TOP_K: Joi.number().default(1),
+  DEFAULT_TOP_K: Joi.number().default(5),
   SIMILARITY_THRESHOLD: Joi.number().default(0.4),
 
   // --- Langfuse ---

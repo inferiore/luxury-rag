@@ -29,7 +29,7 @@ export default () => {
       ),
     },
     query: {
-      defaultTopK: parseInt(process.env.DEFAULT_TOP_K ?? '1', 10),
+      defaultTopK: parseInt(process.env.DEFAULT_TOP_K ?? '5', 10),
       similarityThreshold: parseFloat(
         process.env.SIMILARITY_THRESHOLD ?? '0.4',
       ),
