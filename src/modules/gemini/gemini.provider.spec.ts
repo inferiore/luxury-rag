@@ -18,7 +18,7 @@ describe('GeminiProvider', () => {
   let provider: GeminiProvider;
 
   const configValues: Record<string, unknown> = {
-    'llm.apiKey': 'vertex-express-key',
+    'llm.apiKey': 'gemini-dev-api-key',
     'llm.chatModel': 'gemini-2.5-flash',
     'llm.embeddingModel': 'gemini-embedding-001',
     vectorDim: 1536,
@@ -42,14 +42,13 @@ describe('GeminiProvider', () => {
     provider = module.get(GeminiProvider);
   });
 
-  it('inicializa el cliente en modo Vertex AI Express (vertexai:true + apiKey, sin proyecto/región)', async () => {
+  it('inicializa el cliente contra la Gemini Developer API (apiKey simple, sin vertexai:true)', async () => {
     mockEmbedContent.mockResolvedValue({ embeddings: [{ values: [0.1] }] });
 
     await provider.embed('texto');
 
     expect(GoogleGenAI).toHaveBeenCalledWith({
-      vertexai: true,
-      apiKey: 'vertex-express-key',
+      apiKey: 'gemini-dev-api-key',
     });
   });
 

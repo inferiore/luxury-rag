@@ -11,9 +11,20 @@ import {
 } from '../llm/llm-provider';
 
 /**
- * Cliente hacia Gemini vía el SDK oficial (`@google/genai`), autenticado en
- * modo Vertex AI Express (API key simple, sin proyecto/región — ver
- * `GoogleGenAI({ vertexai: true, apiKey })`).
+ * Cliente hacia Gemini vía el SDK oficial (`@google/genai`), autenticado
+ * contra la **Gemini Developer API** (`generativelanguage.googleapis.com`)
+ * con una API key simple — `GoogleGenAI({ apiKey })`, sin `vertexai: true`.
+ *
+ * Corrección post-verificación en vivo (2026-09-01): el diseño original
+ * usaba `vertexai: true` asumiendo modo Vertex AI Express, pero el endpoint
+ * nativo de Vertex (`aiplatform.googleapis.com`) respondió 401
+ * "API keys are not supported by this API. Expected OAuth2 access token" —
+ * la key real que usa este proyecto es una API key estándar de Gemini, que
+ * solo funciona vía Developer API o vía el endpoint OpenAI-compatible de
+ * Vertex (que tiene su propia capa de traducción de auth). El error de
+ * Google fue explícito: "If you want to use a standard API key, change your
+ * configuration to point to the Gemini Developer API... instead of Vertex
+ * AI's aiplatform endpoint" — se siguió esa indicación literalmente.
  *
  * Existe para reemplazar, en tool-calling multi-turno, el manejo manual del
  * endpoint OpenAI-compatible de Gemini (`OpenAiCompatibleProvider`): Gemini
@@ -35,10 +46,6 @@ import {
  * modelo que tuvieron tool calls, en vez de reconstruirlo desde los campos
  * que sí conocemos — así se reenvía exactamente el mismo objeto que Gemini
  * generó, `thoughtSignature` incluido.
- *
- * ⚠️ No verificado en vivo contra Vertex AI Express Mode real (sin
- * credenciales en este entorno de desarrollo) — ver criterios de
- * verificación manual en el PR que introduce este archivo.
  */
 @Injectable()
 export class GeminiProvider implements LlmProvider {
@@ -46,7 +53,7 @@ export class GeminiProvider implements LlmProvider {
 
   private getClient(): GoogleGenAI {
     const apiKey = this.configService.get<string>('llm.apiKey');
-    return new GoogleGenAI({ vertexai: true, apiKey });
+    return new GoogleGenAI({ apiKey });
   }
 
   async embed(text: string): Promise<number[]> {
