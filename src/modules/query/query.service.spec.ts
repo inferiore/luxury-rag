@@ -324,7 +324,7 @@ describe('QueryService', () => {
       });
     });
 
-    it('agota MAX_TOOL_ROUNDS y devuelve el fallback fijo si el modelo nunca da contenido final', async () => {
+    it('agota MAX_TOOL_ROUNDS con tool siempre exitoso: devuelve el link como fallback en vez del mensaje fijo', async () => {
       boldPaymentsService.isEnabled.mockReturnValue(true);
       boldPaymentsService.createPaymentLink.mockResolvedValue({
         url: 'https://checkout.bold.co/LNK_1',
@@ -356,9 +356,97 @@ describe('QueryService', () => {
 
       expect(result.matched).toBe(true);
       expect(result.answer).toBe(
+        'Aquí tienes tu link de pago: https://checkout.bold.co/LNK_1',
+      );
+      expect(llmProvider.chat).toHaveBeenCalledTimes(3); // MAX_TOOL_ROUNDS (2) + 1
+    });
+
+    it('agota MAX_TOOL_ROUNDS sin ningún tool exitoso: devuelve el fallback fijo genérico', async () => {
+      boldPaymentsService.isEnabled.mockReturnValue(true);
+      boldPaymentsService.createPaymentLink.mockRejectedValue(
+        new Error('Bold caído'),
+      );
+      llmProvider.embed.mockResolvedValue([0.1]);
+      chunksRepository.findNearest.mockResolvedValue([
+        { id: 'chunk-1', content: 'Tour Guatapé: 180000 COP', distance: 0.1 },
+      ]);
+      const toolCallResult = {
+        content: null,
+        toolCalls: [
+          {
+            id: 'call_0',
+            type: 'function' as const,
+            function: {
+              name: CREATE_PAYMENT_LINK_TOOL_NAME,
+              arguments: JSON.stringify({
+                description: 'Tour Guatapé',
+                amount_total_cop: 180000,
+              }),
+            },
+          },
+        ],
+      };
+      llmProvider.chat.mockResolvedValue(toolCallResult);
+
+      const result = await service.ask('quiero pagar el tour a Guatapé', 1);
+
+      expect(result.matched).toBe(true);
+      expect(result.answer).toBe(
         'No pude generar una respuesta, por favor intenta de nuevo.',
       );
       expect(llmProvider.chat).toHaveBeenCalledTimes(3); // MAX_TOOL_ROUNDS (2) + 1
+    });
+
+    it('si la ronda de seguimiento falla tras un tool call ya exitoso, devuelve el link en vez de lanzar (incidente Gemini thought_signature, 2026-09-01)', async () => {
+      boldPaymentsService.isEnabled.mockReturnValue(true);
+      boldPaymentsService.createPaymentLink.mockResolvedValue({
+        url: 'https://checkout.bold.co/LNK_1',
+        paymentLink: 'LNK_1',
+      });
+      llmProvider.embed.mockResolvedValue([0.1]);
+      chunksRepository.findNearest.mockResolvedValue([
+        { id: 'chunk-1', content: 'Tour Guatapé: 180000 COP', distance: 0.1 },
+      ]);
+      llmProvider.chat
+        .mockResolvedValueOnce({
+          content: null,
+          toolCalls: [
+            {
+              id: 'call_0',
+              type: 'function' as const,
+              function: {
+                name: CREATE_PAYMENT_LINK_TOOL_NAME,
+                arguments: JSON.stringify({ amount_total_cop: 180000 }),
+              },
+            },
+          ],
+        })
+        .mockRejectedValueOnce(
+          new Error(
+            'Function call is missing a thought_signature in functionCall parts',
+          ),
+        );
+
+      const result = await service.ask('quiero pagar el tour a Guatapé', 1);
+
+      expect(result).toEqual({
+        answer: 'Aquí tienes tu link de pago: https://checkout.bold.co/LNK_1',
+        matched: true,
+      });
+      expect(llmProvider.chat).toHaveBeenCalledTimes(2);
+    });
+
+    it('si la ronda de seguimiento falla SIN ningún tool exitoso previo, propaga el error (comportamiento previo intacto)', async () => {
+      boldPaymentsService.isEnabled.mockReturnValue(true);
+      llmProvider.embed.mockResolvedValue([0.1]);
+      chunksRepository.findNearest.mockResolvedValue([
+        { id: 'chunk-1', content: 'Tour Guatapé: 180000 COP', distance: 0.1 },
+      ]);
+      llmProvider.chat.mockRejectedValueOnce(new Error('LLM caído'));
+
+      await expect(
+        service.ask('quiero pagar el tour a Guatapé', 1),
+      ).rejects.toThrow('LLM caído');
     });
 
     it('no ofrece el tool al modelo (tools: []) cuando Bold no está habilitado', async () => {
