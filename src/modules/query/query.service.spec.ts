@@ -375,4 +375,68 @@ describe('QueryService', () => {
       expect(options).toEqual({ tools: [] });
     });
   });
+
+  describe('detección de intención de pago sin match de RAG (spec 11)', () => {
+    it('con Bold habilitado y sin candidatos relevantes, clasifica intención y llama al modelo si es de pago', async () => {
+      boldPaymentsService.isEnabled.mockReturnValue(true);
+      llmProvider.embed.mockResolvedValue([0.1]);
+      chunksRepository.findNearest.mockResolvedValue([]);
+      llmProvider.chat
+        .mockResolvedValueOnce({ content: 'SI' }) // clasificación de intención
+        .mockResolvedValueOnce({
+          content: '¿Para qué tour te gustaría el link de pago?',
+        });
+
+      const result = await service.ask('generame un link de pago', 1);
+
+      expect(result).toEqual({
+        answer: '¿Para qué tour te gustaría el link de pago?',
+        matched: false,
+      });
+      expect(llmProvider.chat).toHaveBeenCalledTimes(2);
+      const [classificationMessages] = llmProvider.chat.mock.calls[0];
+      expect(classificationMessages).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            role: 'user',
+            content: expect.stringContaining('generame un link de pago'),
+          }),
+        ]),
+      );
+    });
+
+    it('con Bold habilitado y sin candidatos relevantes, devuelve "datos no encontrados" si la clasificación dice que no es de pago', async () => {
+      boldPaymentsService.isEnabled.mockReturnValue(true);
+      llmProvider.embed.mockResolvedValue([0.1]);
+      chunksRepository.findNearest.mockResolvedValue([]);
+      llmProvider.chat.mockResolvedValueOnce({ content: 'NO' });
+
+      const result = await service.ask('¿cuál es la capital de Francia?', 1);
+
+      expect(result).toEqual({ answer: NO_MATCH_ANSWER, matched: false });
+      expect(llmProvider.chat).toHaveBeenCalledTimes(1); // solo la clasificación, nunca askChatModel
+    });
+
+    it('si la clasificación de intención falla, asume que no es de pago y no rompe /query', async () => {
+      boldPaymentsService.isEnabled.mockReturnValue(true);
+      llmProvider.embed.mockResolvedValue([0.1]);
+      chunksRepository.findNearest.mockResolvedValue([]);
+      llmProvider.chat.mockRejectedValueOnce(new Error('LLM caído'));
+
+      const result = await service.ask('pregunta cualquiera', 1);
+
+      expect(result).toEqual({ answer: NO_MATCH_ANSWER, matched: false });
+    });
+
+    it('no clasifica intención (ni llama al chat model) si Bold no está habilitado y no hay candidatos relevantes', async () => {
+      boldPaymentsService.isEnabled.mockReturnValue(false);
+      llmProvider.embed.mockResolvedValue([0.1]);
+      chunksRepository.findNearest.mockResolvedValue([]);
+
+      const result = await service.ask('generame un link de pago', 1);
+
+      expect(result).toEqual({ answer: NO_MATCH_ANSWER, matched: false });
+      expect(llmProvider.chat).not.toHaveBeenCalled();
+    });
+  });
 });

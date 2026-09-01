@@ -44,6 +44,14 @@ export { SYSTEM_PROMPT };
  * hay coincidencia razonable, llama a `qwen3:8b` con el contexto recuperado.
  * Todo el flujo se traza en Langfuse de forma best-effort (nunca rompe la
  * respuesta si Langfuse falla o no está configurado).
+ *
+ * Excepción al gate determinista (spec 11): si la búsqueda no encuentra
+ * nada relevante Y Bold está habilitado, se hace una clasificación barata
+ * de intención de pago antes de rendirse — una pregunta como "generame un
+ * link de pago" no menciona ningún tour, así que su embedding nunca va a
+ * matchear un chunk, pero sí debería llegar al modelo para que pida el
+ * nombre del tour en vez de recibir "datos no encontrados" sin más. Ver
+ * `detectPaymentIntent`.
  */
 @Injectable()
 export class QueryService {
@@ -97,18 +105,85 @@ export class QueryService {
     });
 
     if (relevant.length === 0) {
-      this.trackEvent(trace, 'below_threshold', {
-        distance: candidates[0]?.distance ?? null,
-        threshold: similarityThreshold,
-      });
-      this.endTrace(trace, { answer: NO_MATCH_ANSWER, matched: false });
-      return { answer: NO_MATCH_ANSWER, matched: false };
+      // Antes de rendirse: si Bold está habilitado, la pregunta puede ser
+      // una intención de pago que no menciona ningún tour por nombre (ej.
+      // "generame un link de pago") — su embedding nunca va a parecerse a
+      // ningún chunk del catálogo, así que el gate de similitud (pensado
+      // para preguntas informativas, spec 04) la descartaría sin darle al
+      // modelo la oportunidad de pedir el nombre del tour. Solo se paga el
+      // costo de esta clasificación extra en este caso borde — el camino
+      // feliz (pregunta ya matchea un tour) nunca la ejecuta. Ver spec 11.
+      const paymentIntent = this.boldPaymentsService.isEnabled()
+        ? await this.detectPaymentIntent(trace, question)
+        : false;
+
+      if (!paymentIntent) {
+        this.trackEvent(trace, 'below_threshold', {
+          distance: candidates[0]?.distance ?? null,
+          threshold: similarityThreshold,
+        });
+        this.endTrace(trace, { answer: NO_MATCH_ANSWER, matched: false });
+        return { answer: NO_MATCH_ANSWER, matched: false };
+      }
+      // Intención de pago detectada sin tour matcheado: se sigue con
+      // `relevant` vacío — el system prompt instruye al modelo a pedir el
+      // nombre del tour en vez de inventar un precio (ver
+      // system-prompt.constant.ts).
     }
 
     const answer = await this.askChatModel(trace, question, relevant);
-    this.endTrace(trace, { answer, matched: true });
+    const matched = relevant.length > 0;
+    this.endTrace(trace, { answer, matched });
 
-    return { answer, matched: true };
+    return { answer, matched };
+  }
+
+  /**
+   * Clasificación barata de intención vía LLM (sin tools) — solo se llama
+   * cuando la búsqueda de similitud no encontró nada relevante (spec 11).
+   * Best-effort: si la clasificación falla, se asume que NO es intención de
+   * pago (comportamiento previo, ya validado) en vez de romper /query.
+   */
+  private async detectPaymentIntent(
+    trace: LangfuseSpan | null,
+    question: string,
+  ): Promise<boolean> {
+    const messages: ChatMessage[] = [
+      {
+        role: 'system',
+        content:
+          'Eres un clasificador. Responde únicamente con la palabra SI o la palabra NO, sin explicación ni texto adicional.',
+      },
+      {
+        role: 'user',
+        content:
+          '¿La siguiente pregunta de un cliente expresa una intención clara de pagar o reservar un tour ' +
+          '(por ejemplo pedir un link de pago, decir "quiero pagar", "resérvame", "cómo pago"), ' +
+          `incluso si no menciona el nombre de un tour específico?\n\nPregunta: "${question}"`,
+      },
+    ];
+
+    const generation = this.startGeneration(trace, 'intent-classification', {
+      input: { messages },
+      model: this.configService.get<string>('llm.chatModel'),
+    });
+
+    try {
+      const result = await this.llmProvider.chat(messages);
+      const isPaymentIntent = (result.content ?? '')
+        .trim()
+        .toUpperCase()
+        .startsWith('SI');
+      this.endGeneration(generation, { isPaymentIntent });
+      return isPaymentIntent;
+    } catch (error) {
+      this.endGeneration(generation, undefined, error);
+      this.logWarn(
+        'No se pudo clasificar la intención de pago, se asume que no es de pago',
+        error,
+      );
+      return false;
+    }
   }
 
   private async askChatModel(
