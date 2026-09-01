@@ -122,6 +122,8 @@ export class QueryService {
         this.trackEvent(trace, 'below_threshold', {
           distance: candidates[0]?.distance ?? null,
           threshold: similarityThreshold,
+          paymentIntent,
+          boldEnable,
         });
         this.endTrace(trace, {
           answer: NO_MATCH_ANSWER,
@@ -137,11 +139,18 @@ export class QueryService {
       // system-prompt.constant.ts).
     }
 
+    // `matched` para el frontend significa "hay una respuesta real que
+    // mostrar", no "hubo match técnico de RAG" — el frontend descarta
+    // `answer` por completo y muestra un mensaje fijo cuando `matched` es
+    // `false` (ver AskView.tsx), así que cualquier respuesta genuina del
+    // modelo (incluida la rama de intención de pago sin tour matcheado, que
+    // puede generar un link real) debe llegar como `matched: true`. Solo
+    // `NO_MATCH_ANSWER` (arriba) usa `matched: false`. Corrección
+    // post-aprobación de spec 11 (2026-09-01).
     const answer = await this.askChatModel(trace, question, relevant);
-    const matched = relevant.length > 0;
-    this.endTrace(trace, { answer, matched });
+    this.endTrace(trace, { answer, matched: true });
 
-    return { answer, matched };
+    return { answer, matched: true };
   }
 
   /**

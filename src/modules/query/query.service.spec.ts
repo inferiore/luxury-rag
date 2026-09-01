@@ -391,7 +391,7 @@ describe('QueryService', () => {
 
       expect(result).toEqual({
         answer: '¿Para qué tour te gustaría el link de pago?',
-        matched: false,
+        matched: true,
       });
       expect(llmProvider.chat).toHaveBeenCalledTimes(2);
       const [classificationMessages] = llmProvider.chat.mock.calls[0];

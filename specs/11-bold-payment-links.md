@@ -416,6 +416,16 @@ private async detectPaymentIntent(trace, question: string): Promise<boolean> {
 - `QueryService.executeToolCall`: solo `amount_total_cop` es obligatorio; `description` se pasa como `undefined` si el modelo no la incluyó o mandó un tipo distinto de string (incluyendo `null`).
 - El prompt de `detectPaymentIntent` (clasificación de intención) se actualizó para preguntar por "pedir crear/generar un link de pago" en vez de "pagar o reservar un tour", consistente con el caso de uso real.
 
+### 11. Corrección post-aprobación #3: `matched` ocultaba respuestas reales en el frontend
+
+**Bug encontrado por Eder probando el flujo end-to-end**: con Bold habilitado, "generame un link de pago por 50000" generaba correctamente un link real de Bold en `answer`, pero el frontend nunca lo mostraba. Causa: `frontend/src/components/AskView.tsx` renderiza `answer` **solo si** `matched === true`; si `matched === false`, descarta `answer` por completo y muestra un texto fijo hardcodeado ("No encontramos información sobre eso en el catálogo"), sin importar el contenido real de la respuesta. La sección 9 había dejado `matched = relevant.length > 0` — como la rama de intención de pago sin tour matcheado llega con `relevant` vacío, devolvía `matched: false` aunque el modelo hubiera generado un link real.
+
+**Corrección, sin tocar el frontend** (pedido explícito de Eder — "estandarízalo desde el backend"): `matched` deja de significar "hubo match técnico de RAG" y pasa a significar lo que el frontend en realidad necesita: **"hay una respuesta real que mostrar"**. Ahora:
+- `matched: false` **únicamente** cuando se devuelve el `NO_MATCH_ANSWER` literal (ni RAG matcheó nada, ni había intención de pago).
+- `matched: true` en cualquier otro caso que llegue a `askChatModel` — incluida la rama de intención de pago sin tour matcheado, sin importar si `relevant` estaba vacío o no.
+
+Esto es consistente con el objetivo original de `matched` en `04-query-endpoint.md` (indicarle al frontend si mostrar la respuesta o un mensaje de "no encontrado") — solo que la implementación de la sección 9 lo había vuelto a acoplar, sin querer, al detalle interno de si hubo match de RAG.
+
 ## Contratos de API
 
 Sin cambios en la forma del contrato HTTP público de `04-query-endpoint.md`:
