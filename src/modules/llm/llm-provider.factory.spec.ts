@@ -1,6 +1,7 @@
 import { ConfigService } from '@nestjs/config';
 import { OllamaProvider } from '../ollama/ollama.provider';
 import { OpenAiCompatibleProvider } from '../openai-compatible/openai-compatible.provider';
+import { GeminiProvider } from '../gemini/gemini.provider';
 import { createLlmProvider } from './llm-provider.factory';
 
 describe('createLlmProvider', () => {
@@ -12,6 +13,10 @@ describe('createLlmProvider', () => {
     embed: jest.fn(),
     chat: jest.fn(),
   } as unknown as OpenAiCompatibleProvider;
+  const geminiProvider = {
+    embed: jest.fn(),
+    chat: jest.fn(),
+  } as unknown as GeminiProvider;
 
   function configServiceReturning(value: unknown): ConfigService {
     return {
@@ -27,8 +32,22 @@ describe('createLlmProvider', () => {
         configService,
         ollamaProvider,
         openAiCompatibleProvider,
+        geminiProvider,
       ),
     ).toBe(openAiCompatibleProvider);
+  });
+
+  it('selecciona GeminiProvider cuando llm.provider es "gemini"', () => {
+    const configService = configServiceReturning('gemini');
+
+    expect(
+      createLlmProvider(
+        configService,
+        ollamaProvider,
+        openAiCompatibleProvider,
+        geminiProvider,
+      ),
+    ).toBe(geminiProvider);
   });
 
   it('selecciona OllamaProvider cuando llm.provider es "ollama"', () => {
@@ -39,6 +58,7 @@ describe('createLlmProvider', () => {
         configService,
         ollamaProvider,
         openAiCompatibleProvider,
+        geminiProvider,
       ),
     ).toBe(ollamaProvider);
   });
@@ -51,6 +71,7 @@ describe('createLlmProvider', () => {
         configService,
         ollamaProvider,
         openAiCompatibleProvider,
+        geminiProvider,
       ),
     ).toBe(ollamaProvider);
   });
