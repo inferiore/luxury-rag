@@ -34,6 +34,17 @@ interface OpenAiChatResponse {
  * (camelCase interno) a `tool_call_id` (snake_case, formato de la API) y
  * `toolCalls` a `tool_calls`. Ver spec 11 y el mapeo equivalente, no
  * trivial, en `OllamaProvider`.
+ *
+ * Reenvía `call.raw` (el objeto crudo tal como llegó de la API) en vez de
+ * reconstruir `{id, type, function}` desde los campos que SÍ conocemos —
+ * Gemini (accedido vía este mismo endpoint OpenAI-compatible) agrega un
+ * campo extra no estándar, `thought_signature`, a cada tool call cuando usa
+ * "thinking" — si no se reenvía tal cual en la siguiente ronda, Gemini
+ * responde 400 "Function call is missing a thought_signature" y rompe el
+ * loop de tool-calling en el segundo round (visto en producción,
+ * 2026-09-01). Como el formato exacto de ese campo no está bien
+ * documentado, la solución robusta es no tocar nada de lo que no
+ * entendemos, en vez de intentar adivinar y reconstruir el campo.
  */
 function toOpenAiMessage(message: ChatMessage): Record<string, unknown> {
   const base: Record<string, unknown> = {
@@ -41,7 +52,14 @@ function toOpenAiMessage(message: ChatMessage): Record<string, unknown> {
     content: message.content,
   };
   if (message.toolCalls?.length) {
-    base.tool_calls = message.toolCalls;
+    base.tool_calls = message.toolCalls.map(
+      (call) =>
+        call.raw ?? {
+          id: call.id,
+          type: call.type,
+          function: call.function,
+        },
+    );
   }
   if (message.toolCallId) {
     base.tool_call_id = message.toolCallId;
@@ -59,6 +77,7 @@ function normalizeToolCalls(
     id: call.id,
     type: 'function' as const,
     function: { name: call.function.name, arguments: call.function.arguments },
+    raw: call,
   }));
 }
 

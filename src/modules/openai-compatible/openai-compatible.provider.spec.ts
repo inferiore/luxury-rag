@@ -190,7 +190,57 @@ describe('OpenAiCompatibleProvider', () => {
     const result = await provider.chat([]);
 
     expect(result.content).toBeNull();
-    expect(result.toolCalls).toEqual(toolCalls);
+    expect(result.toolCalls).toEqual(
+      toolCalls.map((call) => ({ ...call, raw: call })),
+    );
+  });
+
+  it('preserva campos no estándar del tool call (ej. thought_signature de Gemini) vía `raw`, y los reenvía tal cual en el próximo request', async () => {
+    const geminiToolCall = {
+      id: 'call_gemini',
+      type: 'function' as const,
+      function: {
+        name: 'create_payment_link',
+        arguments: '{"amount_total_cop":50000}',
+      },
+      thought_signature: 'opaque-signature-abc123',
+    };
+    const fetchMock = jest.fn().mockResolvedValue({
+      ok: true,
+      json: () =>
+        Promise.resolve({
+          choices: [
+            {
+              message: {
+                role: 'assistant',
+                content: null,
+                tool_calls: [geminiToolCall],
+              },
+            },
+          ],
+        }),
+    });
+    global.fetch = fetchMock;
+
+    const result = await provider.chat([]);
+    expect(result.toolCalls?.[0].raw).toEqual(geminiToolCall);
+
+    // Reenviar ese tool call en el historial de mensajes debe mandar el
+    // objeto crudo (con thought_signature) tal cual, no una versión
+    // reconstruida que lo pierda.
+    await provider.chat([
+      {
+        role: 'assistant',
+        content: null,
+        toolCalls: result.toolCalls,
+      },
+    ]);
+
+    const [, requestInit] = fetchMock.mock.calls[1];
+    const body = JSON.parse((requestInit as { body: string }).body) as {
+      messages: { tool_calls?: unknown[] }[];
+    };
+    expect(body.messages[0].tool_calls).toEqual([geminiToolCall]);
   });
 
   it('no lanza cuando content es null pero hay tool_calls', async () => {

@@ -7,6 +7,16 @@ export interface ToolCall {
     name: string;
     arguments: string; // JSON-string — forma canónica tipo OpenAI, independiente del wire format del provider
   };
+  /**
+   * Objeto crudo tal como lo devolvió el provider, si lo hay — passthrough
+   * de uso interno de cada provider (no lo lee `QueryService`). Existe
+   * porque algunos providers (ej. Gemini vía el endpoint OpenAI-compatible)
+   * agregan campos no estándar al tool call (ej. `thought_signature`) que
+   * deben reenviarse tal cual en la siguiente ronda de la conversación, sin
+   * que el resto del sistema necesite conocer su forma exacta. Ver
+   * `OpenAiCompatibleProvider`.
+   */
+  raw?: unknown;
 }
 
 export interface ChatMessage {

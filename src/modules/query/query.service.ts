@@ -224,6 +224,14 @@ export class QueryService {
     const tools = this.buildAvailableTools();
     const chatModel = this.configService.get<string>('llm.chatModel');
 
+    // Si un tool ya se ejecutó con éxito (ej. el link de pago YA se creó en
+    // Bold — una acción con efecto secundario real, no repetible sin
+    // riesgo) y la ronda de SEGUIMIENTO falla por cualquier motivo (un
+    // proveedor exigiendo un campo que no reenviamos bien, un 429, lo que
+    // sea), no tiene sentido tirar la respuesta a la basura con un 500 —
+    // se usa el resultado del tool directamente como fallback.
+    let lastSuccessfulToolAnswer: string | null = null;
+
     for (let round = 1; round <= MAX_TOOL_ROUNDS + 1; round++) {
       const isLastAllowedRound = round === MAX_TOOL_ROUNDS + 1;
       const generation = this.startGeneration(trace, `chat-round-${round}`, {
@@ -239,6 +247,13 @@ export class QueryService {
         });
       } catch (error) {
         this.endGeneration(generation, undefined, error);
+        if (lastSuccessfulToolAnswer) {
+          this.logWarn(
+            'Falló la ronda de seguimiento tras un tool call ya exitoso — se usa el resultado del tool directamente',
+            error,
+          );
+          return lastSuccessfulToolAnswer;
+        }
         throw error;
       }
       this.endGeneration(generation, result);
@@ -268,10 +283,47 @@ export class QueryService {
           toolCallId: toolCall.id,
           content: toolResultContent,
         });
+
+        const fallbackAnswer = this.buildFallbackAnswerFromToolResult(
+          toolCall.function.name,
+          toolResultContent,
+        );
+        if (fallbackAnswer) {
+          lastSuccessfulToolAnswer = fallbackAnswer;
+        }
       }
     }
 
-    return FALLBACK_NO_CONTENT_ANSWER; // inalcanzable en la práctica, red de seguridad
+    return (
+      lastSuccessfulToolAnswer ?? FALLBACK_NO_CONTENT_ANSWER // inalcanzable en la práctica, red de seguridad
+    );
+  }
+
+  /**
+   * Construye una respuesta legible directamente desde el resultado crudo
+   * (JSON) de un tool call exitoso, para usar como fallback si una ronda de
+   * seguimiento del modelo falla. Devuelve `null` si el resultado fue un
+   * error (nunca se usa un error como fallback) o si el tool no se reconoce.
+   */
+  private buildFallbackAnswerFromToolResult(
+    toolName: string,
+    toolResultContent: string,
+  ): string | null {
+    if (toolName !== CREATE_PAYMENT_LINK_TOOL_NAME) {
+      return null;
+    }
+    try {
+      const parsed = JSON.parse(toolResultContent) as {
+        error?: unknown;
+        url?: unknown;
+      };
+      if (parsed.error || typeof parsed.url !== 'string') {
+        return null;
+      }
+      return `Aquí tienes tu link de pago: ${parsed.url}`;
+    } catch {
+      return null;
+    }
   }
 
   private buildAvailableTools(): ToolDefinition[] {
