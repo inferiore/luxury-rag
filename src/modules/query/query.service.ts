@@ -5,13 +5,32 @@ import type { LangfuseGeneration, LangfuseSpan } from '@langfuse/tracing';
 import type { TextPromptClient } from '@langfuse/client';
 import { ChunksRepository, NearestChunk } from '../chunks/chunks.repository';
 import { LLM_PROVIDER_TOKEN } from '../llm/llm-provider';
-import type { LlmProvider } from '../llm/llm-provider';
+import type {
+  ChatMessage,
+  ChatResult,
+  LlmProvider,
+  ToolCall,
+  ToolDefinition,
+} from '../llm/llm-provider';
 import { LangfuseService } from '../langfuse/langfuse.service';
+import { BoldPaymentsService } from '../bold-payments/bold-payments.service';
 import { stripThinkTags } from '../../common/utils/strip-think-tags';
 import { QueryResponseDto } from './dto/query-response.dto';
 import { SYSTEM_PROMPT } from './system-prompt.constant';
+import {
+  CREATE_PAYMENT_LINK_TOOL,
+  CREATE_PAYMENT_LINK_TOOL_NAME,
+} from './tools/create-payment-link.tool';
 
 export const NO_MATCH_ANSWER = 'datos no encontrados';
+
+// Tope duro de rondas extra de tool-calling (spec 11) — máx.
+// MAX_TOOL_ROUNDS + 1 llamadas al modelo por request. La última ronda
+// permitida se manda sin `tools`, forzando texto: es la válvula de salida
+// del loop, no un límite pensado para alcanzarse en el camino feliz.
+const MAX_TOOL_ROUNDS = 2;
+const FALLBACK_NO_CONTENT_ANSWER =
+  'No pude generar una respuesta, por favor intenta de nuevo.';
 
 // Reexportado para no romper ningún import existente (ej.
 // `scripts/seed-langfuse-prompt.ts`, `query.service.spec.ts`) — la fuente de
@@ -25,6 +44,14 @@ export { SYSTEM_PROMPT };
  * hay coincidencia razonable, llama a `qwen3:8b` con el contexto recuperado.
  * Todo el flujo se traza en Langfuse de forma best-effort (nunca rompe la
  * respuesta si Langfuse falla o no está configurado).
+ *
+ * Excepción al gate determinista (spec 11): si la búsqueda no encuentra
+ * nada relevante Y Bold está habilitado, se hace una clasificación barata
+ * de intención de pago antes de rendirse — una pregunta como "generame un
+ * link de pago" no menciona ningún tour, así que su embedding nunca va a
+ * matchear un chunk, pero sí debería llegar al modelo para que pida el
+ * nombre del tour en vez de recibir "datos no encontrados" sin más. Ver
+ * `detectPaymentIntent`.
  */
 @Injectable()
 export class QueryService {
@@ -35,6 +62,7 @@ export class QueryService {
     private readonly chunksRepository: ChunksRepository,
     @Inject(LLM_PROVIDER_TOKEN) private readonly llmProvider: LlmProvider,
     private readonly langfuseService: LangfuseService,
+    private readonly boldPaymentsService: BoldPaymentsService,
   ) {}
 
   async ask(
@@ -77,18 +105,101 @@ export class QueryService {
     });
 
     if (relevant.length === 0) {
-      this.trackEvent(trace, 'below_threshold', {
-        distance: candidates[0]?.distance ?? null,
-        threshold: similarityThreshold,
-      });
-      this.endTrace(trace, { answer: NO_MATCH_ANSWER, matched: false });
-      return { answer: NO_MATCH_ANSWER, matched: false };
+      // Antes de rendirse: si Bold está habilitado, la pregunta puede ser
+      // una intención de pago que no menciona ningún tour por nombre (ej.
+      // "generame un link de pago") — su embedding nunca va a parecerse a
+      // ningún chunk del catálogo, así que el gate de similitud (pensado
+      // para preguntas informativas, spec 04) la descartaría sin darle al
+      // modelo la oportunidad de pedir el nombre del tour. Solo se paga el
+      // costo de esta clasificación extra en este caso borde — el camino
+      // feliz (pregunta ya matchea un tour) nunca la ejecuta. Ver spec 11.
+      const boldEnable = this.boldPaymentsService.isEnabled();
+      const paymentIntent = boldEnable
+        ? await this.detectPaymentIntent(trace, question)
+        : false;
+
+      if (!paymentIntent) {
+        this.trackEvent(trace, 'below_threshold', {
+          distance: candidates[0]?.distance ?? null,
+          threshold: similarityThreshold,
+          paymentIntent,
+          boldEnable,
+        });
+        this.endTrace(trace, {
+          answer: NO_MATCH_ANSWER,
+          matched: false,
+          paymentIntent,
+          boldEnable,
+        });
+        return { answer: NO_MATCH_ANSWER, matched: false };
+      }
+      // Intención de pago detectada sin tour matcheado: se sigue con
+      // `relevant` vacío — el system prompt instruye al modelo a pedir el
+      // nombre del tour en vez de inventar un precio (ver
+      // system-prompt.constant.ts).
     }
 
+    // `matched` para el frontend significa "hay una respuesta real que
+    // mostrar", no "hubo match técnico de RAG" — el frontend descarta
+    // `answer` por completo y muestra un mensaje fijo cuando `matched` es
+    // `false` (ver AskView.tsx), así que cualquier respuesta genuina del
+    // modelo (incluida la rama de intención de pago sin tour matcheado, que
+    // puede generar un link real) debe llegar como `matched: true`. Solo
+    // `NO_MATCH_ANSWER` (arriba) usa `matched: false`. Corrección
+    // post-aprobación de spec 11 (2026-09-01).
     const answer = await this.askChatModel(trace, question, relevant);
     this.endTrace(trace, { answer, matched: true });
 
     return { answer, matched: true };
+  }
+
+  /**
+   * Clasificación barata de intención vía LLM (sin tools) — solo se llama
+   * cuando la búsqueda de similitud no encontró nada relevante (spec 11).
+   * Best-effort: si la clasificación falla, se asume que NO es intención de
+   * pago (comportamiento previo, ya validado) en vez de romper /query.
+   */
+  private async detectPaymentIntent(
+    trace: LangfuseSpan | null,
+    question: string,
+  ): Promise<boolean> {
+    const messages: ChatMessage[] = [
+      {
+        role: 'system',
+        content:
+          'Eres un clasificador. Responde únicamente con la palabra SI o la palabra NO, sin explicación ni texto adicional.',
+      },
+      {
+        role: 'user',
+        content:
+          '¿La siguiente pregunta pide crear o generar un link de pago ' +
+          '(por ejemplo "generame un link de pago", "créame un link de pago por 50000", ' +
+          '"quiero pagar", "cóbrale a alguien"), incluso si no menciona ningún ' +
+          `tour ni da el monto todavía?\n\nPregunta: "${question}"`,
+      },
+    ];
+
+    const generation = this.startGeneration(trace, 'intent-classification', {
+      input: { messages },
+      model: this.configService.get<string>('llm.chatModel'),
+    });
+
+    try {
+      const result = await this.llmProvider.chat(messages);
+      const isPaymentIntent = (result.content ?? '')
+        .trim()
+        .toUpperCase()
+        .startsWith('SI');
+      this.endGeneration(generation, { isPaymentIntent });
+      return isPaymentIntent;
+    } catch (error) {
+      this.endGeneration(generation, undefined, error);
+      this.logWarn(
+        'No se pudo clasificar la intención de pago, se asume que no es de pago',
+        error,
+      );
+      return false;
+    }
   }
 
   private async askChatModel(
@@ -102,33 +213,106 @@ export class QueryService {
     const context = candidates
       .map((c, i) => `[Tour ${i + 1}]\n${c.content}`)
       .join('\n\n---\n\n');
-    const messages = [
-      { role: 'system' as const, content: systemPromptText },
+    const messages: ChatMessage[] = [
+      { role: 'system', content: systemPromptText },
       {
-        role: 'user' as const,
+        role: 'user',
         content: `Contexto:\n${context}\n\nPregunta: ${question}`,
       },
     ];
 
+    const tools = this.buildAvailableTools();
     const chatModel = this.configService.get<string>('llm.chatModel');
-    const chatGeneration = this.startGeneration(trace, 'chat', {
-      input: { messages },
-      model: chatModel,
-      prompt: promptForTrace ?? undefined,
-    });
 
-    let rawAnswer: string;
-    try {
-      rawAnswer = await this.llmProvider.chat(messages);
-    } catch (error) {
-      this.endGeneration(chatGeneration, undefined, error);
-      throw error;
+    for (let round = 1; round <= MAX_TOOL_ROUNDS + 1; round++) {
+      const isLastAllowedRound = round === MAX_TOOL_ROUNDS + 1;
+      const generation = this.startGeneration(trace, `chat-round-${round}`, {
+        input: { messages },
+        model: chatModel,
+        prompt: promptForTrace ?? undefined,
+      });
+
+      let result: ChatResult;
+      try {
+        result = await this.llmProvider.chat(messages, {
+          tools: isLastAllowedRound ? undefined : tools,
+        });
+      } catch (error) {
+        this.endGeneration(generation, undefined, error);
+        throw error;
+      }
+      this.endGeneration(generation, result);
+
+      if (!result.toolCalls?.length) {
+        return stripThinkTags(result.content ?? FALLBACK_NO_CONTENT_ANSWER);
+      }
+
+      messages.push({
+        role: 'assistant',
+        content: result.content,
+        toolCalls: result.toolCalls,
+      });
+
+      for (const toolCall of result.toolCalls) {
+        const toolSpan = this.startSpan(
+          trace,
+          `tool-${toolCall.function.name}`,
+          {
+            arguments: toolCall.function.arguments,
+          },
+        );
+        const toolResultContent = await this.executeToolCall(toolCall);
+        this.endSpan(toolSpan, { result: toolResultContent });
+        messages.push({
+          role: 'tool',
+          toolCallId: toolCall.id,
+          content: toolResultContent,
+        });
+      }
     }
 
-    const answer = stripThinkTags(rawAnswer);
-    this.endGeneration(chatGeneration, { answer });
+    return FALLBACK_NO_CONTENT_ANSWER; // inalcanzable en la práctica, red de seguridad
+  }
 
-    return answer;
+  private buildAvailableTools(): ToolDefinition[] {
+    return this.boldPaymentsService.isEnabled()
+      ? [CREATE_PAYMENT_LINK_TOOL]
+      : [];
+  }
+
+  /** Nunca lanza — cualquier error se convierte en contenido de mensaje `tool` que el modelo puede leer y responder. */
+  private async executeToolCall(toolCall: ToolCall): Promise<string> {
+    try {
+      if (toolCall.function.name !== CREATE_PAYMENT_LINK_TOOL_NAME) {
+        return JSON.stringify({
+          error: `Herramienta desconocida: ${toolCall.function.name}`,
+        });
+      }
+
+      const args = JSON.parse(toolCall.function.arguments) as {
+        description?: unknown;
+        amount_total_cop?: unknown;
+      };
+      if (typeof args.amount_total_cop !== 'number') {
+        return JSON.stringify({
+          error:
+            'Argumentos inválidos para create_payment_link: se requiere amount_total_cop (number)',
+        });
+      }
+      // `description` es opcional (spec 11, corrección post-aprobación) —
+      // solo se pasa si el modelo la mandó como string; cualquier otra cosa
+      // (null, undefined, tipo incorrecto) se trata como "sin descripción".
+      const description =
+        typeof args.description === 'string' ? args.description : undefined;
+
+      const result = await this.boldPaymentsService.createPaymentLink({
+        description,
+        amountCop: args.amount_total_cop,
+      });
+      return JSON.stringify(result);
+    } catch (error) {
+      return JSON.stringify({ error: this.errorMessage(error) });
+    }
   }
 
   // --- Helpers de tracing: best-effort, nunca rompen /query ---

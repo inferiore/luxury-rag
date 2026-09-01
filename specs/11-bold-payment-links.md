@@ -3,6 +3,10 @@
 ## Estado
 Aprobado
 
+**Corrección post-aprobación #1 (2026-09-01), confirmada por Eder:** el diseño original de la sección 4 dejaba el gate determinista de `SIMILARITY_THRESHOLD` (spec 04) sin cambios — si la búsqueda de similitud no encontraba nada, `/query` devolvía `"datos no encontrados"` **sin llamar nunca al modelo**. Eder detectó en pruebas manuales que esto rompe el objetivo central de esta spec: una pregunta como "generame un link de pago" no menciona ningún tour, así que su embedding nunca matchea un chunk del catálogo, y el modelo nunca llega a tener la oportunidad de decidir nada — el tool de Bold nunca se ofrece. Ver sección 9 (nueva) para el diseño corregido.
+
+**Corrección post-aprobación #2 (2026-09-01), confirmada por Eder:** el diseño original (sección 7-8) asumía un caso de uso de cliente final pagando un tour del catálogo — el monto debía venir del precio en el contexto de RAG, nunca inventado, y la descripción era obligatoria. Eder aclaró que el caso de uso real es distinto: **no es para un usuario final**, es un atajo interno para crear un link de pago sin abrir la app de Bold — quien lo pide **ya indica el monto directamente en su mensaje** (no depende de ningún tour del catálogo), y la descripción es opcional, sin validar su presencia. Ver sección 10 (nueva) para el diseño corregido.
+
 ## Contexto y objetivo
 
 Hoy `POST /query` (spec `04-query-endpoint.md`, `Implementado`) hace exactamente una llamada al modelo de chat por request: recupera contexto vía similitud coseno, arma un mensaje `system` + `user`, llama a `LlmProvider.chat(messages)` una sola vez, y devuelve el string resultante (después de `stripThinkTags`) como `answer`. No existe ningún mecanismo de tool/function calling en este repo — confirmado por grep sobre todo `rag/src/`: cero ocurrencias de `tool_calls`, `tool_choice`, `tools`, `function_call`.
@@ -368,6 +372,60 @@ frase cálida invitando a completar el pago.
 
 **Paso operativo obligatorio, no solo de código**: como `LangfuseService.getSystemPrompt()` (spec 09) prioriza el prompt gestionado en Langfuse Cloud sobre esta constante siempre que Langfuse esté configurado, el prompt en Langfuse (`query-system-prompt`, label `production`) también debe actualizarse al mismo texto — de lo contrario este cambio no tiene ningún efecto en ningún ambiente con Langfuse activo. `scripts/seed-langfuse-prompt.ts` (spec 09) hoy es **create-only**: si el prompt ya existe y difiere de la constante local, solo imprime una advertencia y no lo sobreescribe (por diseño, para no pisar un cambio manual en el dashboard). Por lo tanto, actualizar el prompt en Langfuse para esta spec es un **paso manual en la UI de Langfuse** (editar el prompt `query-system-prompt` y republicar con label `production`), no algo que el script haga solo — ver criterio de aceptación 10.
 
+### 9. Corrección post-aprobación: intención de pago sin match de RAG
+
+**Problema**: el gate determinista de `SIMILARITY_THRESHOLD` (spec 04) corre **antes** de cualquier llamada al modelo. Si `relevant.length === 0`, `/query` devuelve `NO_MATCH_ANSWER` de inmediato. Ese gate fue diseñado para preguntas informativas fuera de dominio (protección anti-alucinación + ahorro de costo/latencia, spec 04) — pero también descarta, sin darle la oportunidad al modelo, cualquier pregunta de intención de pago que no mencione un tour por nombre (su embedding no se parece a ningún chunk del catálogo por definición).
+
+**Solución — no se elimina el gate, se le agrega una excepción barata**: cuando `relevant.length === 0`, y solo en ese caso, si `BoldPaymentsService.isEnabled()` es `true`, se hace **una clasificación adicional de intención vía LLM** (`detectPaymentIntent`, en `QueryService`) antes de rendirse:
+
+```ts
+private async detectPaymentIntent(trace, question: string): Promise<boolean> {
+  const messages: ChatMessage[] = [
+    { role: 'system', content: 'Eres un clasificador. Responde únicamente con la palabra SI o la palabra NO, sin explicación ni texto adicional.' },
+    { role: 'user', content: `¿La siguiente pregunta de un cliente expresa una intención clara de pagar o reservar un tour (...), incluso si no menciona el nombre de un tour específico?\n\nPregunta: "${question}"` },
+  ];
+  try {
+    const result = await this.llmProvider.chat(messages); // sin tools
+    return (result.content ?? '').trim().toUpperCase().startsWith('SI');
+  } catch (error) {
+    return false; // best-effort: si falla, se preserva el comportamiento previo (NO_MATCH_ANSWER)
+  }
+}
+```
+
+**Por qué esta forma y no otra** (decisión ya evaluada y descartada explícitamente):
+- **No se llama en cada request** — solo cuando `relevant.length === 0`, que es exactamente el caso ambiguo que hay que resolver. El camino feliz (pregunta ya matchea un tour por nombre, ej. "quiero pagar el tour a Guatapé") nunca paga esta llamada extra, porque `askChatModel` ya se habría invocado de todos modos.
+- **No se llama si Bold no está habilitado** — sin `BOLD_API_KEY`, esta rama es imposible de aprovechar de todas formas, así que se salta por completo (mismo principio de degradación graceful del resto de la spec).
+- Si la clasificación devuelve `SI` con `relevant` vacío, se llama a `askChatModel(trace, question, [])` de todos modos — el `context` queda vacío, y el system prompt (sección 8) ya instruye al modelo a pedir el nombre del tour en vez de inventar un precio, así que no hace falta lógica nueva ahí.
+- Si la clasificación falla (LLM caído), se asume `false` — nunca rompe `/query`, degrada al comportamiento ya validado (`NO_MATCH_ANSWER`).
+
+**Cambio de contrato interno — `matched` ya no es simplemente "hubo tool call o no"**: antes, llegar a `askChatModel` implicaba `relevant.length > 0`, así que `matched: true` era válido siempre que se llamara al modelo. Ahora `askChatModel` puede llamarse con `relevant` vacío (caso de intención de pago sin tour matcheado), así que `matched` se recalcula explícitamente como `relevant.length > 0` al final de `ask()` — sigue significando exactamente lo mismo que antes ("¿el catálogo realmente tenía este dato?"), solo que ya no puede inferirse de "¿se llegó a llamar al modelo?".
+
+### 10. Corrección post-aprobación #2: el monto viene del mensaje, no del catálogo, y la descripción es opcional
+
+**Caso de uso real, aclarado por Eder**: este tool no es para que un cliente final pague un tour del catálogo — es un atajo interno para crear un link de pago sin abrir la app de Bold. Quien lo pide (no un usuario final) ya indica el monto directamente en su mensaje. Esto invalida dos decisiones del diseño original:
+
+1. **La instrucción del system prompt de "nunca inventes un precio que no esté en el contexto"** — esa instrucción tenía sentido para el caso de uso original (evitar que el modelo invente el precio de un tour), pero activamente le impedía al modelo usar un monto que el usuario **sí** dio explícitamente. Se reescribió (sección 8) para decir lo contrario: el monto siempre viene del mensaje del usuario, no depende del catálogo.
+2. **La descripción era obligatoria** (`required: ['description', 'amount_total_cop']` en el tool, guardrail de 2-100 caracteres en `BoldPaymentsService`) — ahora es opcional en ambos lados. Bold mismo la documenta como campo opcional (`developers.bold.co/pagos-en-linea/api-integration`), así que esto además corrige una restricción que esta spec había agregado de más, no una del contrato real de Bold.
+
+**Cambios de código**:
+- `create-payment-link.tool.ts`: `required` pasa a `['amount_total_cop']` únicamente; `description` acepta `type: ['string', 'null']`.
+- `CreatePaymentLinkParams.description` pasa a `string | null | undefined`.
+- `BoldPaymentsService.validateGuardrails` ya no valida longitud de `description` — solo queda el guardrail de monto (`BOLD_MIN_AMOUNT_COP`/`BOLD_MAX_AMOUNT_COP`), que sigue siendo la barrera de seguridad real contra un monto manipulado.
+- El body enviado a Bold **omite la clave `description` por completo** si no vino (`...(params.description ? { description: params.description } : {})`) en vez de mandar `description: null` o un string vacío.
+- `QueryService.executeToolCall`: solo `amount_total_cop` es obligatorio; `description` se pasa como `undefined` si el modelo no la incluyó o mandó un tipo distinto de string (incluyendo `null`).
+- El prompt de `detectPaymentIntent` (clasificación de intención) se actualizó para preguntar por "pedir crear/generar un link de pago" en vez de "pagar o reservar un tour", consistente con el caso de uso real.
+
+### 11. Corrección post-aprobación #3: `matched` ocultaba respuestas reales en el frontend
+
+**Bug encontrado por Eder probando el flujo end-to-end**: con Bold habilitado, "generame un link de pago por 50000" generaba correctamente un link real de Bold en `answer`, pero el frontend nunca lo mostraba. Causa: `frontend/src/components/AskView.tsx` renderiza `answer` **solo si** `matched === true`; si `matched === false`, descarta `answer` por completo y muestra un texto fijo hardcodeado ("No encontramos información sobre eso en el catálogo"), sin importar el contenido real de la respuesta. La sección 9 había dejado `matched = relevant.length > 0` — como la rama de intención de pago sin tour matcheado llega con `relevant` vacío, devolvía `matched: false` aunque el modelo hubiera generado un link real.
+
+**Corrección, sin tocar el frontend** (pedido explícito de Eder — "estandarízalo desde el backend"): `matched` deja de significar "hubo match técnico de RAG" y pasa a significar lo que el frontend en realidad necesita: **"hay una respuesta real que mostrar"**. Ahora:
+- `matched: false` **únicamente** cuando se devuelve el `NO_MATCH_ANSWER` literal (ni RAG matcheó nada, ni había intención de pago).
+- `matched: true` en cualquier otro caso que llegue a `askChatModel` — incluida la rama de intención de pago sin tour matcheado, sin importar si `relevant` estaba vacío o no.
+
+Esto es consistente con el objetivo original de `matched` en `04-query-endpoint.md` (indicarle al frontend si mostrar la respuesta o un mensaje de "no encontrado") — solo que la implementación de la sección 9 lo había vuelto a acoplar, sin querer, al detalle interno de si hubo match de RAG.
+
 ## Contratos de API
 
 Sin cambios en la forma del contrato HTTP público de `04-query-endpoint.md`:
@@ -427,3 +485,8 @@ N/A — no se crea ni modifica ninguna tabla de Postgres. Sin persistencia de li
 10. `npm run build`, `npm run lint`, `npm test` pasan sin errores tras los cambios. Adicionalmente: `system-prompt.constant.ts` incluye la nueva sección sobre `create_payment_link`, y el prompt gestionado en Langfuse (`query-system-prompt`, label `production`) fue actualizado manualmente en la UI al mismo texto — verificable comparando `client.prompt.get('query-system-prompt', { label: 'production' })` contra la constante local.
 11. **Validación empírica del riesgo abierto de la sección "Limitación conocida"**: contra Ollama real con `qwen3:8b`, una conversación de dos turnos donde el segundo mensaje `role: 'tool'` lleva un `toolCallId` que corresponde a una tool call específica de una respuesta anterior con **múltiples** `tool_calls` en el mismo turno, produce una respuesta del modelo coherente con el resultado de la tool call correcta (no una respuesta que ignora o confunde los resultados) — si Ollama no correlaciona de forma confiable por `tool_call_id`, este criterio falla explícitamente y se documenta como limitación conocida del provider Ollama (no se oculta ni se fuerza a pasar).
 12. Verificación manual: `curl -X POST https://integrations.api.bold.co/online/link/v1 -H "Authorization: x-api-key $BOLD_API_KEY" -H "Content-Type: application/json" -d '{"amount_type":"CLOSE","amount":{"currency":"COP","total_amount":10000},"description":"prueba"}'` devuelve HTTP 200 con `payload.url` no vacío — confirma el contrato asumido de Bold contra la API real antes de que el modelo dependa de él en producción.
+13. **(Corrección post-aprobación, sección 9)** `query.service.spec.ts`: con `boldPaymentsService.isEnabled` en `true` y `chunksRepository.findNearest` devolviendo `[]` (sin candidatos), y `llmProvider.chat` mockeado para devolver primero `{ content: 'SI' }` (clasificación) y luego un texto pidiendo el nombre del tour: `service.ask('generame un link de pago')` devuelve `{ answer: '<texto del modelo>', matched: false }`, y `llmProvider.chat` fue llamado exactamente 2 veces (clasificación + respuesta).
+14. `query.service.spec.ts`: mismo escenario que (13) pero la clasificación devuelve `{ content: 'NO' }`: `service.ask(...)` devuelve `{ answer: NO_MATCH_ANSWER, matched: false }`, y `llmProvider.chat` fue llamado exactamente **1 vez** (solo la clasificación, nunca se llega a `askChatModel`).
+15. `query.service.spec.ts`: mismo escenario que (13) pero `llmProvider.chat` rechaza (LLM caído) en la clasificación: `service.ask(...)` no lanza, devuelve `{ answer: NO_MATCH_ANSWER, matched: false }` — la clasificación es best-effort, un fallo ahí nunca rompe `/query`.
+16. `query.service.spec.ts`: con `boldPaymentsService.isEnabled` en `false` y `chunksRepository.findNearest` devolviendo `[]`: `service.ask('generame un link de pago')` devuelve `NO_MATCH_ANSWER` y `llmProvider.chat` **no fue llamado ninguna vez** — confirma que la clasificación de intención no se paga si Bold no está habilitado.
+17. Verificación manual: `POST /query` con `{"question": "generame un link de pago"}` (sin nombrar ningún tour), `BOLD_API_KEY` configurada y al menos un tour con precio en el catálogo, devuelve HTTP 200 con `matched: false` y un `answer` que le pide al cliente especificar el tour (no `"datos no encontrados"` a secas, no un link inventado) — confirma en el sistema real, no solo en mocks, que el caso que motivó esta corrección quedó resuelto.

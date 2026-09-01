@@ -19,6 +19,8 @@ import { QueryService, NO_MATCH_ANSWER, SYSTEM_PROMPT } from './query.service';
 import { ChunksRepository } from '../chunks/chunks.repository';
 import { LLM_PROVIDER_TOKEN, LlmProvider } from '../llm/llm-provider';
 import { LangfuseService } from '../langfuse/langfuse.service';
+import { BoldPaymentsService } from '../bold-payments/bold-payments.service';
+import { CREATE_PAYMENT_LINK_TOOL_NAME } from './tools/create-payment-link.tool';
 
 describe('QueryService', () => {
   let service: QueryService;
@@ -27,6 +29,9 @@ describe('QueryService', () => {
   let langfuseService: {
     getSystemPrompt: jest.Mock;
   };
+  let boldPaymentsService: jest.Mocked<
+    Pick<BoldPaymentsService, 'isEnabled' | 'createPaymentLink'>
+  >;
 
   const configValues: Record<string, unknown> = {
     'query.defaultTopK': 5,
@@ -41,6 +46,14 @@ describe('QueryService', () => {
       getSystemPrompt: jest
         .fn()
         .mockResolvedValue({ text: SYSTEM_PROMPT, promptForTrace: null }),
+    };
+    // Deshabilitado por default en la mayoría de los tests — así el modelo
+    // recibe tools: [] y el comportamiento es el mismo de un solo round de
+    // chat que existía antes de spec 11. Los tests de tool-calling lo
+    // habilitan explícitamente.
+    boldPaymentsService = {
+      isEnabled: jest.fn().mockReturnValue(false),
+      createPaymentLink: jest.fn(),
     };
     (tracing.startObservation as jest.Mock).mockImplementation(
       jest.requireActual<typeof import('@langfuse/tracing')>(
@@ -58,6 +71,7 @@ describe('QueryService', () => {
         { provide: ChunksRepository, useValue: chunksRepository },
         { provide: LLM_PROVIDER_TOKEN, useValue: llmProvider },
         { provide: LangfuseService, useValue: langfuseService },
+        { provide: BoldPaymentsService, useValue: boldPaymentsService },
       ],
     }).compile();
 
@@ -69,9 +83,9 @@ describe('QueryService', () => {
     chunksRepository.findNearest.mockResolvedValue([
       { id: 'chunk-1', content: 'Tour Guatapé: 180000 COP', distance: 0.1 },
     ]);
-    llmProvider.chat.mockResolvedValue(
-      '<think>razono...</think>El tour a Guatapé cuesta $180.000 COP.',
-    );
+    llmProvider.chat.mockResolvedValue({
+      content: '<think>razono...</think>El tour a Guatapé cuesta $180.000 COP.',
+    });
 
     const result = await service.ask('¿Cuánto cuesta el tour a Guatapé?', 1);
 
@@ -115,7 +129,7 @@ describe('QueryService', () => {
       { id: 'chunk-2', content: 'Tour Comuna 13: 120000 COP', distance: 0.35 },
       { id: 'chunk-3', content: 'Tour lejano irrelevante', distance: 0.6 },
     ]);
-    llmProvider.chat.mockResolvedValue('respuesta');
+    llmProvider.chat.mockResolvedValue({ content: 'respuesta' });
 
     const result = await service.ask('¿Qué tours tienen?', 3);
 
@@ -136,7 +150,7 @@ describe('QueryService', () => {
       { id: 'chunk-2', content: 'Contenido B', distance: 0.2 },
       { id: 'chunk-3', content: 'Contenido C', distance: 0.3 },
     ]);
-    llmProvider.chat.mockResolvedValue('respuesta');
+    llmProvider.chat.mockResolvedValue({ content: 'respuesta' });
 
     const result = await service.ask('¿Qué tours tienen?', 3);
 
@@ -169,7 +183,7 @@ describe('QueryService', () => {
     chunksRepository.findNearest.mockResolvedValue([
       { id: 'chunk-1', content: 'Contenido límite', distance: 0.4 },
     ]);
-    llmProvider.chat.mockResolvedValue('respuesta');
+    llmProvider.chat.mockResolvedValue({ content: 'respuesta' });
 
     const result = await service.ask('pregunta', 1);
 
@@ -221,14 +235,17 @@ describe('QueryService', () => {
     chunksRepository.findNearest.mockResolvedValue([
       { id: 'chunk-1', content: 'contenido', distance: 0.1 },
     ]);
-    llmProvider.chat.mockResolvedValue('respuesta');
+    llmProvider.chat.mockResolvedValue({ content: 'respuesta' });
 
     await service.ask('pregunta', 1);
 
-    expect(llmProvider.chat).toHaveBeenCalledWith([
-      { role: 'system', content: customPromptText },
-      expect.objectContaining({ role: 'user' }),
-    ]);
+    expect(llmProvider.chat).toHaveBeenCalledWith(
+      [
+        { role: 'system', content: customPromptText },
+        expect.objectContaining({ role: 'user' }),
+      ],
+      { tools: [] },
+    );
   });
 
   it('no rompe /query si la generation de Langfuse lanza una excepción (tracing no-fatal, criterio 15 de spec 09)', async () => {
@@ -237,7 +254,7 @@ describe('QueryService', () => {
     };
     const mockRootSpan = {
       startObservation: jest.fn((name: string) =>
-        name === 'chat'
+        name === 'chat-round-1'
           ? throwLangfuseDown()
           : { update: jest.fn().mockReturnThis(), end: jest.fn() },
       ),
@@ -250,15 +267,176 @@ describe('QueryService', () => {
     chunksRepository.findNearest.mockResolvedValue([
       { id: 'chunk-1', content: 'contenido', distance: 0.1 },
     ]);
-    llmProvider.chat.mockResolvedValue('respuesta ok');
+    llmProvider.chat.mockResolvedValue({ content: 'respuesta ok' });
 
     const result = await service.ask('pregunta', 1);
 
     expect(result).toEqual({ answer: 'respuesta ok', matched: true });
     expect(mockRootSpan.startObservation).toHaveBeenCalledWith(
-      'chat',
+      'chat-round-1',
       expect.anything(),
       expect.objectContaining({ asType: 'generation' }),
     );
+  });
+
+  describe('tool calling (Bold payment links, spec 11)', () => {
+    it('completa una ronda de tool-calling: primera respuesta con toolCalls, segunda con texto final', async () => {
+      boldPaymentsService.isEnabled.mockReturnValue(true);
+      boldPaymentsService.createPaymentLink.mockResolvedValue({
+        url: 'https://checkout.bold.co/LNK_1',
+        paymentLink: 'LNK_1',
+      });
+      llmProvider.embed.mockResolvedValue([0.1]);
+      chunksRepository.findNearest.mockResolvedValue([
+        { id: 'chunk-1', content: 'Tour Guatapé: 180000 COP', distance: 0.1 },
+      ]);
+      llmProvider.chat
+        .mockResolvedValueOnce({
+          content: null,
+          toolCalls: [
+            {
+              id: 'call_0',
+              type: 'function',
+              function: {
+                name: CREATE_PAYMENT_LINK_TOOL_NAME,
+                arguments: JSON.stringify({
+                  description: 'Tour Guatapé',
+                  amount_total_cop: 180000,
+                }),
+              },
+            },
+          ],
+        })
+        .mockResolvedValueOnce({
+          content: 'Aquí tienes tu link: https://checkout.bold.co/LNK_1',
+        });
+
+      const result = await service.ask('quiero pagar el tour a Guatapé', 1);
+
+      expect(result).toEqual({
+        answer: 'Aquí tienes tu link: https://checkout.bold.co/LNK_1',
+        matched: true,
+      });
+      expect(llmProvider.chat).toHaveBeenCalledTimes(2);
+      expect(boldPaymentsService.createPaymentLink).toHaveBeenCalledWith({
+        description: 'Tour Guatapé',
+        amountCop: 180000,
+      });
+    });
+
+    it('agota MAX_TOOL_ROUNDS y devuelve el fallback fijo si el modelo nunca da contenido final', async () => {
+      boldPaymentsService.isEnabled.mockReturnValue(true);
+      boldPaymentsService.createPaymentLink.mockResolvedValue({
+        url: 'https://checkout.bold.co/LNK_1',
+        paymentLink: 'LNK_1',
+      });
+      llmProvider.embed.mockResolvedValue([0.1]);
+      chunksRepository.findNearest.mockResolvedValue([
+        { id: 'chunk-1', content: 'Tour Guatapé: 180000 COP', distance: 0.1 },
+      ]);
+      const toolCallResult = {
+        content: null,
+        toolCalls: [
+          {
+            id: 'call_0',
+            type: 'function' as const,
+            function: {
+              name: CREATE_PAYMENT_LINK_TOOL_NAME,
+              arguments: JSON.stringify({
+                description: 'Tour Guatapé',
+                amount_total_cop: 180000,
+              }),
+            },
+          },
+        ],
+      };
+      llmProvider.chat.mockResolvedValue(toolCallResult);
+
+      const result = await service.ask('quiero pagar el tour a Guatapé', 1);
+
+      expect(result.matched).toBe(true);
+      expect(result.answer).toBe(
+        'No pude generar una respuesta, por favor intenta de nuevo.',
+      );
+      expect(llmProvider.chat).toHaveBeenCalledTimes(3); // MAX_TOOL_ROUNDS (2) + 1
+    });
+
+    it('no ofrece el tool al modelo (tools: []) cuando Bold no está habilitado', async () => {
+      boldPaymentsService.isEnabled.mockReturnValue(false);
+      llmProvider.embed.mockResolvedValue([0.1]);
+      chunksRepository.findNearest.mockResolvedValue([
+        { id: 'chunk-1', content: 'Tour Guatapé: 180000 COP', distance: 0.1 },
+      ]);
+      llmProvider.chat.mockResolvedValue({ content: 'respuesta' });
+
+      await service.ask('¿cuánto cuesta el tour a Guatapé?', 1);
+
+      const [, options] = llmProvider.chat.mock.calls[0];
+      expect(options).toEqual({ tools: [] });
+    });
+  });
+
+  describe('detección de intención de pago sin match de RAG (spec 11)', () => {
+    it('con Bold habilitado y sin candidatos relevantes, clasifica intención y llama al modelo si es de pago', async () => {
+      boldPaymentsService.isEnabled.mockReturnValue(true);
+      llmProvider.embed.mockResolvedValue([0.1]);
+      chunksRepository.findNearest.mockResolvedValue([]);
+      llmProvider.chat
+        .mockResolvedValueOnce({ content: 'SI' }) // clasificación de intención
+        .mockResolvedValueOnce({
+          content: '¿Para qué tour te gustaría el link de pago?',
+        });
+
+      const result = await service.ask('generame un link de pago', 1);
+
+      expect(result).toEqual({
+        answer: '¿Para qué tour te gustaría el link de pago?',
+        matched: true,
+      });
+      expect(llmProvider.chat).toHaveBeenCalledTimes(2);
+      const [classificationMessages] = llmProvider.chat.mock.calls[0];
+      expect(classificationMessages).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            role: 'user',
+            content: expect.stringContaining('generame un link de pago'),
+          }),
+        ]),
+      );
+    });
+
+    it('con Bold habilitado y sin candidatos relevantes, devuelve "datos no encontrados" si la clasificación dice que no es de pago', async () => {
+      boldPaymentsService.isEnabled.mockReturnValue(true);
+      llmProvider.embed.mockResolvedValue([0.1]);
+      chunksRepository.findNearest.mockResolvedValue([]);
+      llmProvider.chat.mockResolvedValueOnce({ content: 'NO' });
+
+      const result = await service.ask('¿cuál es la capital de Francia?', 1);
+
+      expect(result).toEqual({ answer: NO_MATCH_ANSWER, matched: false });
+      expect(llmProvider.chat).toHaveBeenCalledTimes(1); // solo la clasificación, nunca askChatModel
+    });
+
+    it('si la clasificación de intención falla, asume que no es de pago y no rompe /query', async () => {
+      boldPaymentsService.isEnabled.mockReturnValue(true);
+      llmProvider.embed.mockResolvedValue([0.1]);
+      chunksRepository.findNearest.mockResolvedValue([]);
+      llmProvider.chat.mockRejectedValueOnce(new Error('LLM caído'));
+
+      const result = await service.ask('pregunta cualquiera', 1);
+
+      expect(result).toEqual({ answer: NO_MATCH_ANSWER, matched: false });
+    });
+
+    it('no clasifica intención (ni llama al chat model) si Bold no está habilitado y no hay candidatos relevantes', async () => {
+      boldPaymentsService.isEnabled.mockReturnValue(false);
+      llmProvider.embed.mockResolvedValue([0.1]);
+      chunksRepository.findNearest.mockResolvedValue([]);
+
+      const result = await service.ask('generame un link de pago', 1);
+
+      expect(result).toEqual({ answer: NO_MATCH_ANSWER, matched: false });
+      expect(llmProvider.chat).not.toHaveBeenCalled();
+    });
   });
 });

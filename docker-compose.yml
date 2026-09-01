@@ -46,6 +46,11 @@ services:
       LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-}
       LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-}
       LANGFUSE_HOST: ${LANGFUSE_HOST:-https://cloud.langfuse.com}
+      BOLD_API_KEY: ${BOLD_API_KEY:-}
+      BOLD_BASE_URL: ${BOLD_BASE_URL:-https://integrations.api.bold.co}
+      BOLD_MAX_AMOUNT_COP: ${BOLD_MAX_AMOUNT_COP:-5000000}
+      BOLD_MIN_AMOUNT_COP: ${BOLD_MIN_AMOUNT_COP:-1000}
+      BOLD_LINK_EXPIRATION_HOURS: ${BOLD_LINK_EXPIRATION_HOURS:-24}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173}
     extra_hosts:
       # host-gateway makes host.docker.internal resolve on Linux Docker
