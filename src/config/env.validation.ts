@@ -61,6 +61,15 @@ export const envValidationSchema = Joi.object({
   // lo lea, neutralizando el alias LANGFUSE_BASE_URL (spec 09, bug 1).
   LANGFUSE_HOST: Joi.string().optional(),
 
+  // --- Bold Payments (opcional — si BOLD_API_KEY no está configurada, la
+  // herramienta create_payment_link no se ofrece al modelo, /query sigue
+  // funcionando en modo solo-RAG, igual que Langfuse) ---
+  BOLD_API_KEY: Joi.string().allow('').optional(),
+  BOLD_BASE_URL: Joi.string().default('https://integrations.api.bold.co'),
+  BOLD_MAX_AMOUNT_COP: Joi.number().default(5_000_000),
+  BOLD_MIN_AMOUNT_COP: Joi.number().default(1_000),
+  BOLD_LINK_EXPIRATION_HOURS: Joi.number().default(24),
+
   // --- CORS ---
   CORS_ORIGINS: Joi.string().default('http://localhost:5173'),
 });

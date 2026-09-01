@@ -44,5 +44,15 @@ export default () => {
       usingDeprecatedHostAlias:
         !process.env.LANGFUSE_HOST && !!process.env.LANGFUSE_BASE_URL,
     },
+    boldPayments: {
+      apiKey: process.env.BOLD_API_KEY ?? '',
+      baseUrl: process.env.BOLD_BASE_URL ?? 'https://integrations.api.bold.co',
+      maxAmountCop: parseInt(process.env.BOLD_MAX_AMOUNT_COP ?? '5000000', 10),
+      minAmountCop: parseInt(process.env.BOLD_MIN_AMOUNT_COP ?? '1000', 10),
+      linkExpirationHours: parseInt(
+        process.env.BOLD_LINK_EXPIRATION_HOURS ?? '24',
+        10,
+      ),
+    },
   };
 };

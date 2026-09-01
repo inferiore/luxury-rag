@@ -1,13 +1,65 @@
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { ChatMessage, LlmProvider } from '../llm/llm-provider';
+import {
+  ChatMessage,
+  ChatOptions,
+  ChatResult,
+  LlmProvider,
+  ToolCall,
+} from '../llm/llm-provider';
 
 interface OpenAiEmbeddingResponse {
   data: { embedding: number[] }[];
 }
 
+interface OpenAiToolCall {
+  id: string;
+  type: 'function';
+  function: { name: string; arguments: string };
+}
+
 interface OpenAiChatResponse {
-  choices: { message: { role: string; content: string } }[];
+  choices: {
+    message: {
+      role: string;
+      content: string | null;
+      tool_calls?: OpenAiToolCall[];
+    };
+  }[];
+}
+
+/**
+ * OpenAI ya es la forma canónica elegida para `ToolCall` (arguments como
+ * string, id presente) — el mapeo es casi identidad, solo pasa `toolCallId`
+ * (camelCase interno) a `tool_call_id` (snake_case, formato de la API) y
+ * `toolCalls` a `tool_calls`. Ver spec 11 y el mapeo equivalente, no
+ * trivial, en `OllamaProvider`.
+ */
+function toOpenAiMessage(message: ChatMessage): Record<string, unknown> {
+  const base: Record<string, unknown> = {
+    role: message.role,
+    content: message.content,
+  };
+  if (message.toolCalls?.length) {
+    base.tool_calls = message.toolCalls;
+  }
+  if (message.toolCallId) {
+    base.tool_call_id = message.toolCallId;
+  }
+  return base;
+}
+
+function normalizeToolCalls(
+  raw: OpenAiToolCall[] | undefined,
+): ToolCall[] | undefined {
+  if (!raw || raw.length === 0) {
+    return undefined;
+  }
+  return raw.map((call) => ({
+    id: call.id,
+    type: 'function' as const,
+    function: { name: call.function.name, arguments: call.function.arguments },
+  }));
 }
 
 const EMBED_TIMEOUT_MS = 30_000;
@@ -82,7 +134,10 @@ export class OpenAiCompatibleProvider implements LlmProvider {
     return embedding;
   }
 
-  async chat(messages: ChatMessage[]): Promise<string> {
+  async chat(
+    messages: ChatMessage[],
+    options?: ChatOptions,
+  ): Promise<ChatResult> {
     const baseUrl = this.configService.get<string>('llm.baseUrl');
     const apiKey = this.configService.get<string>('llm.apiKey');
     const model = this.configService.get<string>('llm.chatModel');
@@ -98,7 +153,12 @@ export class OpenAiCompatibleProvider implements LlmProvider {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${apiKey}`,
         },
-        body: JSON.stringify({ model, messages, stream: false }),
+        body: JSON.stringify({
+          model,
+          messages: messages.map(toOpenAiMessage),
+          stream: false,
+          ...(options?.tools ? { tools: options.tools } : {}),
+        }),
         signal: controller.signal,
       });
     } catch (error) {
@@ -118,13 +178,16 @@ export class OpenAiCompatibleProvider implements LlmProvider {
     }
 
     const data = (await response.json()) as OpenAiChatResponse;
-    const content = data.choices?.[0]?.message?.content;
-    if (content === undefined || content === null) {
+    const content = data.choices?.[0]?.message?.content ?? null;
+    const toolCalls = normalizeToolCalls(
+      data.choices?.[0]?.message?.tool_calls,
+    );
+    if (content === null && !toolCalls?.length) {
       throw new Error(
         'OpenAI-compatible /chat/completions no devolvió ningún mensaje',
       );
     }
 
-    return content;
+    return { content, toolCalls };
   }
 }

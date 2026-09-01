@@ -5,13 +5,32 @@ import type { LangfuseGeneration, LangfuseSpan } from '@langfuse/tracing';
 import type { TextPromptClient } from '@langfuse/client';
 import { ChunksRepository, NearestChunk } from '../chunks/chunks.repository';
 import { LLM_PROVIDER_TOKEN } from '../llm/llm-provider';
-import type { LlmProvider } from '../llm/llm-provider';
+import type {
+  ChatMessage,
+  ChatResult,
+  LlmProvider,
+  ToolCall,
+  ToolDefinition,
+} from '../llm/llm-provider';
 import { LangfuseService } from '../langfuse/langfuse.service';
+import { BoldPaymentsService } from '../bold-payments/bold-payments.service';
 import { stripThinkTags } from '../../common/utils/strip-think-tags';
 import { QueryResponseDto } from './dto/query-response.dto';
 import { SYSTEM_PROMPT } from './system-prompt.constant';
+import {
+  CREATE_PAYMENT_LINK_TOOL,
+  CREATE_PAYMENT_LINK_TOOL_NAME,
+} from './tools/create-payment-link.tool';
 
 export const NO_MATCH_ANSWER = 'datos no encontrados';
+
+// Tope duro de rondas extra de tool-calling (spec 11) — máx.
+// MAX_TOOL_ROUNDS + 1 llamadas al modelo por request. La última ronda
+// permitida se manda sin `tools`, forzando texto: es la válvula de salida
+// del loop, no un límite pensado para alcanzarse en el camino feliz.
+const MAX_TOOL_ROUNDS = 2;
+const FALLBACK_NO_CONTENT_ANSWER =
+  'No pude generar una respuesta, por favor intenta de nuevo.';
 
 // Reexportado para no romper ningún import existente (ej.
 // `scripts/seed-langfuse-prompt.ts`, `query.service.spec.ts`) — la fuente de
@@ -35,6 +54,7 @@ export class QueryService {
     private readonly chunksRepository: ChunksRepository,
     @Inject(LLM_PROVIDER_TOKEN) private readonly llmProvider: LlmProvider,
     private readonly langfuseService: LangfuseService,
+    private readonly boldPaymentsService: BoldPaymentsService,
   ) {}
 
   async ask(
@@ -102,33 +122,104 @@ export class QueryService {
     const context = candidates
       .map((c, i) => `[Tour ${i + 1}]\n${c.content}`)
       .join('\n\n---\n\n');
-    const messages = [
-      { role: 'system' as const, content: systemPromptText },
+    const messages: ChatMessage[] = [
+      { role: 'system', content: systemPromptText },
       {
-        role: 'user' as const,
+        role: 'user',
         content: `Contexto:\n${context}\n\nPregunta: ${question}`,
       },
     ];
 
+    const tools = this.buildAvailableTools();
     const chatModel = this.configService.get<string>('llm.chatModel');
-    const chatGeneration = this.startGeneration(trace, 'chat', {
-      input: { messages },
-      model: chatModel,
-      prompt: promptForTrace ?? undefined,
-    });
 
-    let rawAnswer: string;
-    try {
-      rawAnswer = await this.llmProvider.chat(messages);
-    } catch (error) {
-      this.endGeneration(chatGeneration, undefined, error);
-      throw error;
+    for (let round = 1; round <= MAX_TOOL_ROUNDS + 1; round++) {
+      const isLastAllowedRound = round === MAX_TOOL_ROUNDS + 1;
+      const generation = this.startGeneration(trace, `chat-round-${round}`, {
+        input: { messages },
+        model: chatModel,
+        prompt: promptForTrace ?? undefined,
+      });
+
+      let result: ChatResult;
+      try {
+        result = await this.llmProvider.chat(messages, {
+          tools: isLastAllowedRound ? undefined : tools,
+        });
+      } catch (error) {
+        this.endGeneration(generation, undefined, error);
+        throw error;
+      }
+      this.endGeneration(generation, result);
+
+      if (!result.toolCalls?.length) {
+        return stripThinkTags(result.content ?? FALLBACK_NO_CONTENT_ANSWER);
+      }
+
+      messages.push({
+        role: 'assistant',
+        content: result.content,
+        toolCalls: result.toolCalls,
+      });
+
+      for (const toolCall of result.toolCalls) {
+        const toolSpan = this.startSpan(
+          trace,
+          `tool-${toolCall.function.name}`,
+          {
+            arguments: toolCall.function.arguments,
+          },
+        );
+        const toolResultContent = await this.executeToolCall(toolCall);
+        this.endSpan(toolSpan, { result: toolResultContent });
+        messages.push({
+          role: 'tool',
+          toolCallId: toolCall.id,
+          content: toolResultContent,
+        });
+      }
     }
 
-    const answer = stripThinkTags(rawAnswer);
-    this.endGeneration(chatGeneration, { answer });
+    return FALLBACK_NO_CONTENT_ANSWER; // inalcanzable en la práctica, red de seguridad
+  }
 
-    return answer;
+  private buildAvailableTools(): ToolDefinition[] {
+    return this.boldPaymentsService.isEnabled()
+      ? [CREATE_PAYMENT_LINK_TOOL]
+      : [];
+  }
+
+  /** Nunca lanza — cualquier error se convierte en contenido de mensaje `tool` que el modelo puede leer y responder. */
+  private async executeToolCall(toolCall: ToolCall): Promise<string> {
+    try {
+      if (toolCall.function.name !== CREATE_PAYMENT_LINK_TOOL_NAME) {
+        return JSON.stringify({
+          error: `Herramienta desconocida: ${toolCall.function.name}`,
+        });
+      }
+
+      const args = JSON.parse(toolCall.function.arguments) as {
+        description?: unknown;
+        amount_total_cop?: unknown;
+      };
+      if (
+        typeof args.description !== 'string' ||
+        typeof args.amount_total_cop !== 'number'
+      ) {
+        return JSON.stringify({
+          error:
+            'Argumentos inválidos para create_payment_link: se requiere description (string) y amount_total_cop (number)',
+        });
+      }
+
+      const result = await this.boldPaymentsService.createPaymentLink({
+        description: args.description,
+        amountCop: args.amount_total_cop,
+      });
+      return JSON.stringify(result);
+    } catch (error) {
+      return JSON.stringify({ error: this.errorMessage(error) });
+    }
   }
 
   // --- Helpers de tracing: best-effort, nunca rompen /query ---

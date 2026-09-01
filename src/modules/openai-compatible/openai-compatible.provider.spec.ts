@@ -123,7 +123,10 @@ describe('OpenAiCompatibleProvider', () => {
         }),
       }),
     );
-    expect(result).toBe('respuesta del modelo');
+    expect(result).toEqual({
+      content: 'respuesta del modelo',
+      toolCalls: undefined,
+    });
   });
 
   it('chat() lanza un error descriptivo si la respuesta HTTP no es ok', async () => {
@@ -155,5 +158,93 @@ describe('OpenAiCompatibleProvider', () => {
     await expect(provider.chat([])).rejects.toThrow(
       /no devolvió ningún mensaje/,
     );
+  });
+
+  it('pasa tool_calls (arguments ya como string) casi sin transformar', async () => {
+    const toolCalls = [
+      {
+        id: 'call_abc',
+        type: 'function' as const,
+        function: {
+          name: 'create_payment_link',
+          arguments: '{"description":"Tour X","amount_total_cop":180000}',
+        },
+      },
+    ];
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      json: () =>
+        Promise.resolve({
+          choices: [
+            {
+              message: {
+                role: 'assistant',
+                content: null,
+                tool_calls: toolCalls,
+              },
+            },
+          ],
+        }),
+    });
+
+    const result = await provider.chat([]);
+
+    expect(result.content).toBeNull();
+    expect(result.toolCalls).toEqual(toolCalls);
+  });
+
+  it('no lanza cuando content es null pero hay tool_calls', async () => {
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      json: () =>
+        Promise.resolve({
+          choices: [
+            {
+              message: {
+                role: 'assistant',
+                content: null,
+                tool_calls: [
+                  {
+                    id: 'call_1',
+                    type: 'function',
+                    function: { name: 'x', arguments: '{}' },
+                  },
+                ],
+              },
+            },
+          ],
+        }),
+    });
+
+    await expect(provider.chat([])).resolves.not.toThrow();
+  });
+
+  it('incluye tools en el body saliente cuando se pasan por options', async () => {
+    const fetchMock = jest.fn().mockResolvedValue({
+      ok: true,
+      json: () =>
+        Promise.resolve({
+          choices: [{ message: { role: 'assistant', content: 'ok' } }],
+        }),
+    });
+    global.fetch = fetchMock;
+
+    const tools = [
+      {
+        type: 'function' as const,
+        function: {
+          name: 'create_payment_link',
+          description: 'x',
+          parameters: {},
+        },
+      },
+    ];
+    await provider.chat([], { tools });
+
+    const [, requestInit] = fetchMock.mock.calls[0];
+    const body = JSON.parse((requestInit as { body: string }).body) as {
+      tools: unknown;
+    };
+    expect(body.tools).toEqual(tools);
   });
 });

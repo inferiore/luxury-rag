@@ -114,7 +114,10 @@ describe('OllamaProvider', () => {
         }),
       }),
     );
-    expect(result).toBe('respuesta del modelo');
+    expect(result).toEqual({
+      content: 'respuesta del modelo',
+      toolCalls: undefined,
+    });
   });
 
   it('chat() lanza un error descriptivo si la respuesta HTTP no es ok', async () => {
@@ -135,5 +138,89 @@ describe('OllamaProvider', () => {
     await expect(provider.chat([])).rejects.toThrow(
       /No se pudo conectar con Ollama/,
     );
+  });
+
+  it('normaliza tool_calls de Ollama (arguments como objeto, sin id) a la forma canónica', async () => {
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      json: () =>
+        Promise.resolve({
+          message: {
+            role: 'assistant',
+            content: null,
+            tool_calls: [
+              {
+                function: {
+                  name: 'create_payment_link',
+                  arguments: {
+                    description: 'Tour X',
+                    amount_total_cop: 180000,
+                  },
+                },
+              },
+            ],
+          },
+        }),
+    });
+
+    const result = await provider.chat([]);
+
+    expect(result.content).toBeNull();
+    expect(result.toolCalls).toEqual([
+      {
+        id: 'call_0',
+        type: 'function',
+        function: {
+          name: 'create_payment_link',
+          arguments: JSON.stringify({
+            description: 'Tour X',
+            amount_total_cop: 180000,
+          }),
+        },
+      },
+    ]);
+  });
+
+  it('no lanza cuando content es null pero hay tool_calls', async () => {
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      json: () =>
+        Promise.resolve({
+          message: {
+            role: 'assistant',
+            content: null,
+            tool_calls: [{ function: { name: 'x', arguments: {} } }],
+          },
+        }),
+    });
+
+    await expect(provider.chat([])).resolves.not.toThrow();
+  });
+
+  it('incluye tools en el body saliente cuando se pasan por options', async () => {
+    const fetchMock = jest.fn().mockResolvedValue({
+      ok: true,
+      json: () =>
+        Promise.resolve({ message: { role: 'assistant', content: 'ok' } }),
+    });
+    global.fetch = fetchMock;
+
+    const tools = [
+      {
+        type: 'function' as const,
+        function: {
+          name: 'create_payment_link',
+          description: 'x',
+          parameters: {},
+        },
+      },
+    ];
+    await provider.chat([], { tools });
+
+    const [, requestInit] = fetchMock.mock.calls[0];
+    const body = JSON.parse((requestInit as { body: string }).body) as {
+      tools: unknown;
+    };
+    expect(body.tools).toEqual(tools);
   });
 });
