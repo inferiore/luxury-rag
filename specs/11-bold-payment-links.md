@@ -1,7 +1,7 @@
 # 11 — Tool calling: el modelo genera links de pago Bold en `/query`
 
 ## Estado
-Borrador — pendiente de aprobación de Eder. No implementar hasta `Estado: Aprobado`.
+Aprobado
 
 ## Contexto y objetivo
 
