@@ -2,7 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 
 export interface CreatePaymentLinkParams {
-  description: string;
+  description?: string | null;
   amountCop: number;
 }
 
@@ -27,11 +27,17 @@ const NANOSECONDS_PER_HOUR = 60 * 60 * 1_000_000_000;
  * `11-bold-payment-links.md`.
  *
  * `amount_type`/`currency` quedan fijos server-side (`CLOSE`/`COP`) — el
- * modelo nunca los controla, solo `description`/`amountCop`. Los guardrails
- * de `validateGuardrails` corren SIEMPRE antes de cualquier llamada HTTP:
- * son la barrera de seguridad real contra un monto/descripción manipulados
- * vía prompt injection, el JSON Schema que ve el modelo (ver
+ * modelo nunca los controla, solo `description`/`amountCop`. El guardrail de
+ * monto en `validateGuardrails` corre SIEMPRE antes de cualquier llamada
+ * HTTP: es la barrera de seguridad real contra un monto manipulado vía
+ * prompt injection, el JSON Schema que ve el modelo (ver
  * `create-payment-link.tool.ts`) es solo una sugerencia de forma.
+ *
+ * `description` es opcional (igual que en la API de Bold) — este endpoint no
+ * es para un cliente final pidiendo pagar un tour del catálogo, es un atajo
+ * interno: quien pide el link ya indica el monto directamente en su mensaje,
+ * no hace falta validar ni exigir una descripción (spec 11, corrección
+ * post-aprobación 2026-09-01).
  */
 @Injectable()
 export class BoldPaymentsService {
@@ -73,7 +79,7 @@ export class BoldPaymentsService {
         body: JSON.stringify({
           amount_type: 'CLOSE',
           amount: { currency: 'COP', total_amount: params.amountCop },
-          description: params.description,
+          ...(params.description ? { description: params.description } : {}),
           expiration_date:
             Date.now() * 1_000_000 + expirationHours * NANOSECONDS_PER_HOUR,
         }),
@@ -107,11 +113,6 @@ export class BoldPaymentsService {
     const max =
       this.configService.get<number>('boldPayments.maxAmountCop') ?? 5_000_000;
 
-    if (params.description.length < 2 || params.description.length > 100) {
-      throw new Error(
-        'La descripción del pago debe tener entre 2 y 100 caracteres',
-      );
-    }
     if (
       !Number.isInteger(params.amountCop) ||
       params.amountCop < min ||

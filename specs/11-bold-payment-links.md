@@ -3,7 +3,9 @@
 ## Estado
 Aprobado
 
-**Corrección post-aprobación (2026-09-01), confirmada por Eder:** el diseño original de la sección 4 dejaba el gate determinista de `SIMILARITY_THRESHOLD` (spec 04) sin cambios — si la búsqueda de similitud no encontraba nada, `/query` devolvía `"datos no encontrados"` **sin llamar nunca al modelo**. Eder detectó en pruebas manuales que esto rompe el objetivo central de esta spec: una pregunta como "generame un link de pago" no menciona ningún tour, así que su embedding nunca matchea un chunk del catálogo, y el modelo nunca llega a tener la oportunidad de decidir nada — el tool de Bold nunca se ofrece. Ver sección 9 (nueva) para el diseño corregido.
+**Corrección post-aprobación #1 (2026-09-01), confirmada por Eder:** el diseño original de la sección 4 dejaba el gate determinista de `SIMILARITY_THRESHOLD` (spec 04) sin cambios — si la búsqueda de similitud no encontraba nada, `/query` devolvía `"datos no encontrados"` **sin llamar nunca al modelo**. Eder detectó en pruebas manuales que esto rompe el objetivo central de esta spec: una pregunta como "generame un link de pago" no menciona ningún tour, así que su embedding nunca matchea un chunk del catálogo, y el modelo nunca llega a tener la oportunidad de decidir nada — el tool de Bold nunca se ofrece. Ver sección 9 (nueva) para el diseño corregido.
+
+**Corrección post-aprobación #2 (2026-09-01), confirmada por Eder:** el diseño original (sección 7-8) asumía un caso de uso de cliente final pagando un tour del catálogo — el monto debía venir del precio en el contexto de RAG, nunca inventado, y la descripción era obligatoria. Eder aclaró que el caso de uso real es distinto: **no es para un usuario final**, es un atajo interno para crear un link de pago sin abrir la app de Bold — quien lo pide **ya indica el monto directamente en su mensaje** (no depende de ningún tour del catálogo), y la descripción es opcional, sin validar su presencia. Ver sección 10 (nueva) para el diseño corregido.
 
 ## Contexto y objetivo
 
@@ -398,6 +400,21 @@ private async detectPaymentIntent(trace, question: string): Promise<boolean> {
 - Si la clasificación falla (LLM caído), se asume `false` — nunca rompe `/query`, degrada al comportamiento ya validado (`NO_MATCH_ANSWER`).
 
 **Cambio de contrato interno — `matched` ya no es simplemente "hubo tool call o no"**: antes, llegar a `askChatModel` implicaba `relevant.length > 0`, así que `matched: true` era válido siempre que se llamara al modelo. Ahora `askChatModel` puede llamarse con `relevant` vacío (caso de intención de pago sin tour matcheado), así que `matched` se recalcula explícitamente como `relevant.length > 0` al final de `ask()` — sigue significando exactamente lo mismo que antes ("¿el catálogo realmente tenía este dato?"), solo que ya no puede inferirse de "¿se llegó a llamar al modelo?".
+
+### 10. Corrección post-aprobación #2: el monto viene del mensaje, no del catálogo, y la descripción es opcional
+
+**Caso de uso real, aclarado por Eder**: este tool no es para que un cliente final pague un tour del catálogo — es un atajo interno para crear un link de pago sin abrir la app de Bold. Quien lo pide (no un usuario final) ya indica el monto directamente en su mensaje. Esto invalida dos decisiones del diseño original:
+
+1. **La instrucción del system prompt de "nunca inventes un precio que no esté en el contexto"** — esa instrucción tenía sentido para el caso de uso original (evitar que el modelo invente el precio de un tour), pero activamente le impedía al modelo usar un monto que el usuario **sí** dio explícitamente. Se reescribió (sección 8) para decir lo contrario: el monto siempre viene del mensaje del usuario, no depende del catálogo.
+2. **La descripción era obligatoria** (`required: ['description', 'amount_total_cop']` en el tool, guardrail de 2-100 caracteres en `BoldPaymentsService`) — ahora es opcional en ambos lados. Bold mismo la documenta como campo opcional (`developers.bold.co/pagos-en-linea/api-integration`), así que esto además corrige una restricción que esta spec había agregado de más, no una del contrato real de Bold.
+
+**Cambios de código**:
+- `create-payment-link.tool.ts`: `required` pasa a `['amount_total_cop']` únicamente; `description` acepta `type: ['string', 'null']`.
+- `CreatePaymentLinkParams.description` pasa a `string | null | undefined`.
+- `BoldPaymentsService.validateGuardrails` ya no valida longitud de `description` — solo queda el guardrail de monto (`BOLD_MIN_AMOUNT_COP`/`BOLD_MAX_AMOUNT_COP`), que sigue siendo la barrera de seguridad real contra un monto manipulado.
+- El body enviado a Bold **omite la clave `description` por completo** si no vino (`...(params.description ? { description: params.description } : {})`) en vez de mandar `description: null` o un string vacío.
+- `QueryService.executeToolCall`: solo `amount_total_cop` es obligatorio; `description` se pasa como `undefined` si el modelo no la incluyó o mandó un tipo distinto de string (incluyendo `null`).
+- El prompt de `detectPaymentIntent` (clasificación de intención) se actualizó para preguntar por "pedir crear/generar un link de pago" en vez de "pagar o reservar un tour", consistente con el caso de uso real.
 
 ## Contratos de API
 

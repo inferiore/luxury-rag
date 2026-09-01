@@ -113,7 +113,8 @@ export class QueryService {
       // modelo la oportunidad de pedir el nombre del tour. Solo se paga el
       // costo de esta clasificación extra en este caso borde — el camino
       // feliz (pregunta ya matchea un tour) nunca la ejecuta. Ver spec 11.
-      const paymentIntent = this.boldPaymentsService.isEnabled()
+      const boldEnable = this.boldPaymentsService.isEnabled();
+      const paymentIntent = boldEnable
         ? await this.detectPaymentIntent(trace, question)
         : false;
 
@@ -122,7 +123,12 @@ export class QueryService {
           distance: candidates[0]?.distance ?? null,
           threshold: similarityThreshold,
         });
-        this.endTrace(trace, { answer: NO_MATCH_ANSWER, matched: false });
+        this.endTrace(trace, {
+          answer: NO_MATCH_ANSWER,
+          matched: false,
+          paymentIntent,
+          boldEnable,
+        });
         return { answer: NO_MATCH_ANSWER, matched: false };
       }
       // Intención de pago detectada sin tour matcheado: se sigue con
@@ -157,9 +163,10 @@ export class QueryService {
       {
         role: 'user',
         content:
-          '¿La siguiente pregunta de un cliente expresa una intención clara de pagar o reservar un tour ' +
-          '(por ejemplo pedir un link de pago, decir "quiero pagar", "resérvame", "cómo pago"), ' +
-          `incluso si no menciona el nombre de un tour específico?\n\nPregunta: "${question}"`,
+          '¿La siguiente pregunta pide crear o generar un link de pago ' +
+          '(por ejemplo "generame un link de pago", "créame un link de pago por 50000", ' +
+          '"quiero pagar", "cóbrale a alguien"), incluso si no menciona ningún ' +
+          `tour ni da el monto todavía?\n\nPregunta: "${question}"`,
       },
     ];
 
@@ -277,18 +284,20 @@ export class QueryService {
         description?: unknown;
         amount_total_cop?: unknown;
       };
-      if (
-        typeof args.description !== 'string' ||
-        typeof args.amount_total_cop !== 'number'
-      ) {
+      if (typeof args.amount_total_cop !== 'number') {
         return JSON.stringify({
           error:
-            'Argumentos inválidos para create_payment_link: se requiere description (string) y amount_total_cop (number)',
+            'Argumentos inválidos para create_payment_link: se requiere amount_total_cop (number)',
         });
       }
+      // `description` es opcional (spec 11, corrección post-aprobación) —
+      // solo se pasa si el modelo la mandó como string; cualquier otra cosa
+      // (null, undefined, tipo incorrecto) se trata como "sin descripción".
+      const description =
+        typeof args.description === 'string' ? args.description : undefined;
 
       const result = await this.boldPaymentsService.createPaymentLink({
-        description: args.description,
+        description,
         amountCop: args.amount_total_cop,
       });
       return JSON.stringify(result);

@@ -147,13 +147,31 @@ describe('BoldPaymentsService', () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it('rechaza una descripción de 1 carácter sin llamar a fetch', async () => {
-    const fetchMock = jest.fn();
+  it('crea el link sin descripción (undefined) y la omite del body enviado a Bold', async () => {
+    const fetchMock = jest.fn().mockResolvedValue({
+      ok: true,
+      json: () =>
+        Promise.resolve({
+          payload: {
+            payment_link: 'LNK_1',
+            url: 'https://checkout.bold.co/LNK_1',
+          },
+          errors: [],
+        }),
+    });
     global.fetch = fetchMock;
 
-    await expect(
-      service.createPaymentLink({ description: 'x', amountCop: 10000 }),
-    ).rejects.toThrow(/descripción del pago debe tener entre 2 y 100/);
-    expect(fetchMock).not.toHaveBeenCalled();
+    const result = await service.createPaymentLink({ amountCop: 10000 });
+
+    expect(result).toEqual({
+      url: 'https://checkout.bold.co/LNK_1',
+      paymentLink: 'LNK_1',
+    });
+    const [, requestInit] = fetchMock.mock.calls[0];
+    const body = JSON.parse((requestInit as { body: string }).body) as Record<
+      string,
+      unknown
+    >;
+    expect(body).not.toHaveProperty('description');
   });
 });
