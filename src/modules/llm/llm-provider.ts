@@ -24,6 +24,14 @@ export interface ChatMessage {
   content: string | null; // null solo válido en un mensaje assistant que es puramente tool-call
   toolCalls?: ToolCall[]; // solo en mensajes assistant
   toolCallId?: string; // solo en mensajes role: 'tool', correlaciona con ToolCall.id
+  /**
+   * Objeto crudo del turno completo tal como lo devolvió el provider, si lo
+   * hay — mismo propósito que `ToolCall.raw` pero a nivel de todo el
+   * mensaje (ej. el `Content` completo de Gemini, que puede traer varios
+   * `Part` con `thoughtSignature` propio cada uno, no solo en el
+   * function call). Ver `GeminiProvider`.
+   */
+  raw?: unknown;
 }
 
 export interface ToolDefinition {

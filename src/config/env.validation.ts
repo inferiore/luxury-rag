@@ -22,25 +22,42 @@ export const envValidationSchema = Joi.object({
   VECTOR_DIM: Joi.number().default(1536),
 
   // --- Selección de proveedor LLM ---
-  LLM_PROVIDER: Joi.string().valid('ollama', 'openai').default('ollama'),
+  // "gemini" usa el SDK oficial de Google (@google/genai) contra Vertex AI
+  // Express Mode — a diferencia de "openai" apuntando a Gemini vía su
+  // endpoint OpenAI-compatible, el SDK maneja automáticamente los
+  // `thoughtSignature` que Gemini exige en tool-calling multi-turno (ver
+  // GeminiProvider). No usa BASE_URL (el SDK resuelve el endpoint solo).
+  LLM_PROVIDER: Joi.string()
+    .valid('ollama', 'openai', 'gemini')
+    .default('ollama'),
 
-  // --- Config compartida del proveedor LLM activo (Ollama u OpenAI-compatible) ---
-  // BASE_URL/CHAT_MODEL/EMBEDDING_MODEL sirven para cualquiera de los dos
-  // providers según LLM_PROVIDER — un .env solo corre un provider a la vez,
-  // así que no hace falta duplicar el nombre por proveedor. LLM_API_KEY no
-  // aplica a Ollama (no usa auth), solo se exige cuando LLM_PROVIDER=openai.
+  // --- Config compartida del proveedor LLM activo (Ollama, OpenAI-compatible o Gemini) ---
+  // BASE_URL/CHAT_MODEL/EMBEDDING_MODEL/LLM_API_KEY sirven para cualquiera
+  // de los providers según LLM_PROVIDER — un .env solo corre un provider a
+  // la vez, así que no hace falta duplicar el nombre por proveedor.
+  // LLM_API_KEY no aplica a Ollama (no usa auth); BASE_URL no aplica a
+  // Gemini (el SDK no lo necesita).
   BASE_URL: Joi.string()
     .default('http://localhost:11434')
     .when('LLM_PROVIDER', { is: 'openai', then: Joi.string().required() }),
   CHAT_MODEL: Joi.string()
     .default('qwen3:8b')
-    .when('LLM_PROVIDER', { is: 'openai', then: Joi.string().required() }),
+    .when('LLM_PROVIDER', {
+      is: Joi.valid('openai', 'gemini'),
+      then: Joi.string().required(),
+    }),
   EMBEDDING_MODEL: Joi.string()
     .default('qwen3-embedding')
-    .when('LLM_PROVIDER', { is: 'openai', then: Joi.string().required() }),
+    .when('LLM_PROVIDER', {
+      is: Joi.valid('openai', 'gemini'),
+      then: Joi.string().required(),
+    }),
   LLM_API_KEY: Joi.string()
     .allow('')
-    .when('LLM_PROVIDER', { is: 'openai', then: Joi.string().required() }),
+    .when('LLM_PROVIDER', {
+      is: Joi.valid('openai', 'gemini'),
+      then: Joi.string().required(),
+    }),
 
   // --- Validación de /documents/upload (spec 02 v2) ---
   MAX_UPLOAD_ITEMS: Joi.number().default(2000),

@@ -27,6 +27,7 @@
     "eval": "ts-node -r tsconfig-paths/register scripts/run-eval.ts"
   },
   "dependencies": {
+    "@google/genai": "^2.20.0",
     "@langfuse/client": "^5.11.0",
     "@langfuse/otel": "^5.11.0",
     "@langfuse/tracing": "^5.11.0",
